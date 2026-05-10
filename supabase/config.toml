@@ -53,3 +53,47 @@ entrypoint = "./functions/score-profiles/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/score-profiles/*.html" ]
+
+[functions.start-search]
+enabled = true
+verify_jwt = true
+import_map = "./functions/start-search/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/start-search/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/start-search/*.html" ]
+
+[functions.process-search-job]
+enabled = true
+verify_jwt = true
+import_map = "./functions/process-search-job/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/process-search-job/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/process-search-job/*.html" ]
+
+[functions.process-pending-jobs]
+enabled = true
+verify_jwt = true
+import_map = "./functions/process-pending-jobs/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/process-pending-jobs/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/process-pending-jobs/*.html" ]
+
+[functions.get-job-status]
+enabled = true
+verify_jwt = true
+import_map = "./functions/get-job-status/deno.json"
+# Uncomment to specify a custom file path to the entrypoint.
+# Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
+entrypoint = "./functions/get-job-status/index.ts"
+# Specifies static files to be bundled with the function. Supports glob patterns.
+# For example, if you want to serve static HTML pages in your function:
+# static_files = [ "./functions/get-job-status/*.html" ]
