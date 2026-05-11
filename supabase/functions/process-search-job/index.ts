@@ -4,15 +4,20 @@ import { setCachedResults } from "../_shared/lead-providers/cache.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY);
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+};
 
 async function callFunction(name: string, body: Record<string, unknown>) {
   const res = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${SERVICE_KEY}`,
+      Authorization: `Bearer ${SERVICE_KEY}`,
     },
     body: JSON.stringify(body),
   });
@@ -27,91 +32,144 @@ async function updateJob(jobId: string, updates: Record<string, unknown>) {
   await supabase.from("search_jobs").update(updates).eq("id", jobId);
 }
 
+async function stageStart(jobId: string, icpPrompt: string) {
+  await updateJob(jobId, {
+    status: "running",
+    progress: 5,
+    current_stage: "parsing",
+    started_at: new Date().toISOString(),
+  });
+
+  const { filters } = await callFunction("parse-icp", { prompt: icpPrompt });
+
+  await updateJob(jobId, {
+    progress: 10,
+    parsed_filters: filters,
+    current_stage: "search",
+    next_stage: "search",
+  });
+}
+
+async function stageSearch(jobId: string, searchId: string, job: Record<string, unknown>) {
+  await updateJob(jobId, { progress: 15, current_stage: "searching" });
+
+  const filters = job.parsed_filters;
+  if (!filters) throw new Error("parsed_filters mancanti nel job — stage 'start' non completato?");
+
+  await callFunction("stage1-search", { searchId, filters });
+
+  await updateJob(jobId, {
+    progress: 40,
+    current_stage: "enrich",
+    next_stage: "enrich",
+  });
+}
+
+async function stageEnrich(jobId: string, searchId: string) {
+  await updateJob(jobId, { progress: 50, current_stage: "enriching" });
+
+  await callFunction("stage2-enrich", { searchId });
+
+  await updateJob(jobId, {
+    progress: 70,
+    current_stage: "score",
+    next_stage: "score",
+  });
+}
+
+async function stageScore(jobId: string, searchId: string, icpPrompt: string) {
+  await updateJob(jobId, { progress: 80, current_stage: "scoring" });
+
+  await callFunction("score-profiles", { searchId, icpPrompt });
+
+  await updateJob(jobId, {
+    progress: 90,
+    current_stage: "finalize",
+    next_stage: "finalize",
+  });
+}
+
+async function stageFinalize(jobId: string, searchId: string, icpPrompt: string) {
+  const { data: results } = await supabase
+    .from("search_results")
+    .select("*")
+    .eq("search_id", searchId)
+    .order("match_score", { ascending: false });
+
+  await setCachedResults(supabase, icpPrompt, results ?? []);
+
+  await updateJob(jobId, {
+    status: "completed",
+    progress: 100,
+    current_stage: "completed",
+    next_stage: null,
+    completed_at: new Date().toISOString(),
+  });
+}
+
 Deno.serve(async (req) => {
-  if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
 
   const body = await req.json().catch(() => ({}));
-  const { jobId } = body as { jobId?: string };
+  const { jobId, stage } = body as { jobId?: string; stage?: string };
 
   if (!jobId?.trim()) {
     return new Response(
-      JSON.stringify({ error: "Missing required field: jobId" }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
+      JSON.stringify({ error: "Missing jobId" }),
+      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 
   try {
-    const { data: job, error: jobError } = await supabase
+    const { data: job } = await supabase
       .from("search_jobs")
       .select("*, searches(icp_prompt)")
       .eq("id", jobId)
       .single();
 
-    if (jobError || !job) {
-      throw new Error(
-        `Job not found: ${jobError?.message ?? "unknown error"}`,
-      );
-    }
+    if (!job) throw new Error("Job not found");
 
     const icpPrompt = (job.searches as { icp_prompt: string }).icp_prompt;
     const searchId = job.search_id as string;
 
-    // Stage 1 — parse ICP
-    await updateJob(jobId, {
-      status: "running",
-      progress: 5,
-      current_stage: "parsing",
-      started_at: new Date().toISOString(),
-    });
-    const { filters } = await callFunction("parse-icp", { prompt: icpPrompt });
+    const currentStage = stage || job.next_stage || "start";
 
-    // Stage 2 — search + coarse filter
-    await updateJob(jobId, { progress: 15, current_stage: "searching" });
-    await callFunction("stage1-search", { searchId, filters });
-
-    // Stage 3 — bio + posts enrichment
-    await updateJob(jobId, { progress: 50, current_stage: "enriching" });
-    await callFunction("stage2-enrich", { searchId });
-
-    // Stage 4 — AI scoring
-    await updateJob(jobId, { progress: 80, current_stage: "scoring" });
-    await callFunction("score-profiles", { searchId, icpPrompt });
-
-    // Stage 5 — cache final results
-    const { data: results } = await supabase
-      .from("search_results")
-      .select("*")
-      .eq("search_id", searchId)
-      .order("match_score", { ascending: false });
-
-    await setCachedResults(supabase, icpPrompt, results ?? []);
-
-    // Complete
-    await updateJob(jobId, {
-      status: "completed",
-      progress: 100,
-      current_stage: "completed",
-      completed_at: new Date().toISOString(),
-    });
+    switch (currentStage) {
+      case "start":
+        await stageStart(jobId, icpPrompt);
+        break;
+      case "search":
+        await stageSearch(jobId, searchId, job);
+        break;
+      case "enrich":
+        await stageEnrich(jobId, searchId);
+        break;
+      case "score":
+        await stageScore(jobId, searchId, icpPrompt);
+        break;
+      case "finalize":
+        await stageFinalize(jobId, searchId, icpPrompt);
+        break;
+      default:
+        throw new Error(`Unknown stage: ${currentStage}`);
+    }
 
     return new Response(
-      JSON.stringify({ success: true, jobId, searchId }),
-      { headers: { "Content-Type": "application/json" } },
+      JSON.stringify({ success: true, jobId, stage: currentStage }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Internal server error";
-    await updateJob(jobId, {
+    await updateJob(jobId!, {
       status: "failed",
       error_message: message,
+      next_stage: null,
     });
     return new Response(
       JSON.stringify({ error: message }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
