@@ -51,8 +51,35 @@ Deno.serve(async (req) => {
         .select("id")
         .single();
 
+      const searchId = search?.id;
+
+      // ── FIX: inserisci i risultati cached anche in search_results ──
+      // Così la history page e "View Results" trovano i dati associati
+      // a questo searchId, invece di mostrare 0 matches.
+      if (searchId && Array.isArray(cacheResult.results) && cacheResult.results.length > 0) {
+        type CachedRow = Record<string, unknown>;
+
+        const rows = (cacheResult.results as CachedRow[]).map((r) => ({
+          search_id: searchId,
+          linkedin_urn: r.linkedin_urn ?? "",
+          linkedin_url: r.linkedin_url ?? "",
+          full_name: r.full_name ?? null,
+          headline: r.headline ?? null,
+          location: r.location ?? null,
+          follower_count: r.follower_count ?? null,
+          bio: r.bio ?? null,
+          recent_posts: r.recent_posts ?? null,
+          match_score: r.match_score ?? null,
+          match_reason: r.match_reason ?? null,
+          best_context: r.best_context ?? null,
+          saved_to_crm: false,
+        }));
+
+        await supabase.from("search_results").insert(rows);
+      }
+
       return new Response(
-        JSON.stringify({ cached: true, results: cacheResult.results, searchId: search?.id }),
+        JSON.stringify({ cached: true, results: cacheResult.results, searchId }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
