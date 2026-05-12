@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Bookmark, BookmarkCheck, MapPin } from "lucide-react";
+import { Bookmark, BookmarkCheck, ExternalLink, MapPin } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -167,9 +167,23 @@ export function SearchResultsTable({
                           {initial}
                         </div>
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-foreground">
-                            {r.full_name ?? "—"}
-                          </p>
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-sm font-medium text-foreground">
+                              {r.full_name ?? "—"}
+                            </span>
+                            {r.linkedin_url && (
+                              <a
+                                href={r.linkedin_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-muted-foreground hover:text-[#6d47f5]"
+                                aria-label="Open on LinkedIn"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <ExternalLink className="size-3.5" />
+                              </a>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </TableCell>

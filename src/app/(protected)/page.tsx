@@ -282,6 +282,10 @@ function NewSearchView() {
       if (data.jobId) {
         setActiveJobId(data.jobId);
         startPolling(data.jobId);
+        toast.info(
+          "⏱ Estimated time: 2–4 minutes. We'll notify you when results are ready.",
+          { duration: 8000 }
+        );
       } else {
         throw new Error("Unexpected response from start-search.");
       }

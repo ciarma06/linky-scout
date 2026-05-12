@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Clock, RefreshCcw } from "lucide-react";
+import { ArrowRight, Clock, RefreshCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ScoreBadge } from "@/components/score-badge";
 import { useAuth } from "@/lib/auth-context";
 import { formatRelativeDate, truncate } from "@/lib/format";
@@ -33,6 +42,10 @@ export default function HistoryPage() {
   const { user } = useAuth();
   const [searches, setSearches] = useState<SearchWithStats[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pendingDelete, setPendingDelete] = useState<SearchWithStats | null>(
+    null
+  );
+  const [deleting, setDeleting] = useState(false);
 
   const userEmail = user?.email;
 
@@ -94,6 +107,40 @@ export default function HistoryPage() {
 
   function reRun(prompt: string) {
     router.push(`/?prompt=${encodeURIComponent(prompt)}`);
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete || !user?.jwt) return;
+    const id = pendingDelete.id;
+    setDeleting(true);
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_EDGE_FUNCTIONS_BASE_URL}/delete-search`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${user.jwt}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ searchId: id }),
+        }
+      );
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success !== true) {
+        throw new Error(data?.error ?? "Failed to delete search");
+      }
+
+      setSearches((prev) => prev.filter((s) => s.id !== id));
+      setPendingDelete(null);
+      toast.success("Search deleted");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Could not delete the search.";
+      toast.error(message);
+    } finally {
+      setDeleting(false);
+    }
   }
 
   return (
@@ -158,12 +205,54 @@ export default function HistoryPage() {
                     View Results
                     <ArrowRight className="size-4" />
                   </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="rounded-xl"
+                    onClick={() => setPendingDelete(s)}
+                    aria-label="Delete search"
+                  >
+                    <Trash2 className="size-4" />
+                    Delete
+                  </Button>
                 </div>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
+
+      <Dialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => {
+          if (!open && !deleting) setPendingDelete(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this search?</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this search? This action cannot be
+              undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline" disabled={deleting}>
+                Cancel
+              </Button>
+            </DialogClose>
+            <Button
+              variant="destructive"
+              onClick={confirmDelete}
+              disabled={deleting}
+              className="rounded-xl"
+            >
+              {deleting ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
