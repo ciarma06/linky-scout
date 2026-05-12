@@ -117,7 +117,7 @@ Deno.serve(async (req) => {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 4000,
+        max_tokens: 8000,
         system:
           `You are an expert B2B sales analyst. You evaluate LinkedIn profiles against an ICP (Ideal Customer Profile) description.
 
@@ -148,13 +148,35 @@ Return a JSON array with one object per profile. Use the same index values as th
     }
 
     const data = await response.json();
-    const text: string = data.content?.[0]?.text?.trim() ?? "";
+    let text: string = data.content[0].text.trim();
+
+    // Rimuovi eventuali backtick markdown
+    text = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
 
     let scores: ClaudeScore[];
     try {
       scores = JSON.parse(text);
     } catch {
-      throw new Error(`Failed to parse Claude response: ${text}`);
+      // Prova a estrarre array anche se il JSON è troncato
+      const match = text.match(/^\[[\s\S]*/);
+      if (match) {
+        // Aggiungi chiusura se troncato
+        let partial = match[0];
+        // Trova l'ultimo oggetto completo
+        const lastComplete = partial.lastIndexOf('},');
+        if (lastComplete > 0) {
+          partial = partial.substring(0, lastComplete + 1) + ']';
+          try {
+            scores = JSON.parse(partial);
+          } catch {
+            throw new Error(`Failed to parse Claude response: ${text.substring(0, 200)}`);
+          }
+        } else {
+          throw new Error(`Failed to parse Claude response: ${text.substring(0, 200)}`);
+        }
+      } else {
+        throw new Error(`Failed to parse Claude response: ${text.substring(0, 200)}`);
+      }
     }
 
     if (!Array.isArray(scores)) {

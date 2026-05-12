@@ -23,12 +23,3 @@ export function getSupabaseBrowserClient(): SupabaseClient {
 export const EDGE_FUNCTIONS_BASE_URL =
   process.env.NEXT_PUBLIC_EDGE_FUNCTIONS_BASE_URL ?? "";
 
-
-
-/*
-  - pulsantino per aprire il profilo direttamente dalla tabella come in Saved Leads
-  - pulsante per eliminare una search dalla Search History
-  - avviso del probabile tempo della richiesta di search, così l'utente sa quanto tempo deve aspettare
-  - pensare al migliorare i risultati della search
-
-*/

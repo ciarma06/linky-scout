@@ -44,8 +44,15 @@ Deno.serve(async (req) => {
     const cacheResult = await getCachedResults(supabase, icpPrompt);
 
     if (cacheResult.hit) {
+      // Record in history even for cached results
+      const { data: search } = await supabase
+        .from("searches")
+        .insert({ user_id: userEmail, icp_prompt: icpPrompt })
+        .select("id")
+        .single();
+
       return new Response(
-        JSON.stringify({ cached: true, results: cacheResult.results }),
+        JSON.stringify({ cached: true, results: cacheResult.results, searchId: search?.id }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }

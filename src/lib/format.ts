@@ -18,7 +18,9 @@ export function formatFollowers(count: number | null | undefined): string {
  */
 export function formatRelativeDate(iso: string | null | undefined): string {
   if (!iso) return "—";
-  const date = new Date(iso);
+  // Supabase may omit the trailing "Z"; append it to force UTC interpretation
+  const normalized = iso.endsWith("Z") ? iso : iso + "Z";
+  const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return "—";
 
   const diffMs = Date.now() - date.getTime();
