@@ -1,3 +1,5 @@
+//process-pending-jobs/index.ts
+
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -6,21 +8,32 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(SUPABASE_URL, SERVICE_KEY);
 
 async function launchJob(jobId: string, stage: string) {
+  // Fire-and-forget: spariamo la richiesta a process-search-job e abortiamo
+  // l'attesa della risposta dopo 1500ms. Il server continua a processare
+  // nel suo isolate indipendente. In questo modo process-pending-jobs
+  // ritorna velocemente invece di restare appeso per tutta la durata dello stage.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 1500);
+
   try {
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/process-search-job`, {
+    await fetch(`${SUPABASE_URL}/functions/v1/process-search-job`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${SERVICE_KEY}`,
       },
       body: JSON.stringify({ jobId, stage }),
+      signal: controller.signal,
     });
-    if (!res.ok) {
-      const err = await res.text();
-      console.error(`[cron] Failed to launch job ${jobId} stage ${stage}: ${err}`);
-    }
   } catch (err) {
-    console.error(`[cron] Error launching job ${jobId}:`, err);
+    // AbortError è atteso (significa che la richiesta è partita e abbiamo
+    // tagliato l'attesa della risposta). Solo errori diversi vanno loggati.
+    const name = err instanceof Error ? err.name : "";
+    if (name !== "AbortError") {
+      console.error(`[cron] Failed to launch job ${jobId} stage ${stage}:`, err);
+    }
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

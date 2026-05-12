@@ -1,6 +1,10 @@
+//process-search-job/index.ts
+
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { setCachedResults } from "../_shared/lead-providers/cache.ts";
+
+declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -30,6 +34,27 @@ async function callFunction(name: string, body: Record<string, unknown>) {
 
 async function updateJob(jobId: string, updates: Record<string, unknown>) {
   await supabase.from("search_jobs").update(updates).eq("id", jobId);
+}
+
+/**
+ * Triggera process-pending-jobs in background per lanciare subito il prossimo stage.
+ * Usa EdgeRuntime.waitUntil per garantire che la fetch parta prima dello shutdown dell'isolate.
+ * Se waitUntil non è disponibile, nessun problema: il cron raccoglierà il job entro 60s.
+ */
+function triggerNextStage() {
+  const promise = fetch(`${SUPABASE_URL}/functions/v1/process-pending-jobs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${SERVICE_KEY}`,
+    },
+  }).then((r) => r.text()).catch(() => {});
+
+  try {
+    EdgeRuntime.waitUntil(promise);
+  } catch {
+    // EdgeRuntime.waitUntil non disponibile — il cron farà da safety net
+  }
 }
 
 async function stageStart(jobId: string, icpPrompt: string) {
@@ -154,6 +179,10 @@ Deno.serve(async (req) => {
         break;
       default:
         throw new Error(`Unknown stage: ${currentStage}`);
+    }
+
+    if (currentStage !== "finalize") {
+      triggerNextStage();
     }
 
     return new Response(

@@ -1,3 +1,5 @@
+//stage2-enrich/index.ts
+
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { getLeadProvider } from "../_shared/lead-providers/index.ts";
