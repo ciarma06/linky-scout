@@ -1,3 +1,5 @@
+//page.tsx
+
 "use client";
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -101,35 +103,33 @@ function NewSearchView() {
   const userEmail = user?.email;
   const loadSearchResults = useCallback(
     async (searchId: string) => {
-      if (!userEmail) return;
-      const supabase = getSupabaseBrowserClient();
-      const { data, error } = await supabase
-        .from("search_results")
-        .select("*")
-        .eq("search_id", searchId)
-        .order("match_score", { ascending: false });
-
-      if (error) {
+      if (!user?.jwt) return;
+      try {
+        const res = await fetch(`${EDGE_FUNCTIONS_BASE_URL}/get-job-status`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${user.jwt}`,
+          },
+          body: JSON.stringify({ jobId: null, searchId }),
+        });
+  
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Failed to load results");
+  
+        if (data.icp_prompt) setPrompt(data.icp_prompt);
+        setUi({
+          stage: "done",
+          results: data.results ?? [],
+          progress: 100,
+          currentStage: "completed",
+          error: null,
+        });
+      } catch (err) {
         toast.error("Could not load saved results.");
-        return;
       }
-
-      const { data: search } = await supabase
-        .from("searches")
-        .select("icp_prompt")
-        .eq("id", searchId)
-        .single();
-
-      if (search?.icp_prompt) setPrompt(search.icp_prompt);
-      setUi({
-        stage: "done",
-        results: (data ?? []) as SearchResult[],
-        progress: 100,
-        currentStage: "completed",
-        error: null,
-      });
     },
-    [userEmail]
+    [user?.jwt]
   );
 
   // Sync local state from URL query params (an external source).

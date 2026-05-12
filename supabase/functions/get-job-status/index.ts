@@ -1,3 +1,5 @@
+//get-job-status/index.ts
+
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
@@ -26,11 +28,39 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { jobId } = body as { jobId?: string };
+    const { jobId, searchId } = body as { jobId?: string; searchId?: string };
 
+    // Modalità 1: carica risultati direttamente da searchId (per "View Results" dalla history)
+    if (searchId?.trim() && !jobId?.trim()) {
+      const { data: search } = await supabase
+        .from("searches")
+        .select("icp_prompt")
+        .eq("id", searchId)
+        .single();
+
+      const { data: results } = await supabase
+        .from("search_results")
+        .select("*")
+        .eq("search_id", searchId)
+        .order("match_score", { ascending: false });
+
+      return new Response(
+        JSON.stringify({
+          status: "completed",
+          progress: 100,
+          current_stage: "completed",
+          error_message: null,
+          icp_prompt: search?.icp_prompt ?? "",
+          results: results ?? [],
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
+    // Modalità 2: polling standard per jobId
     if (!jobId?.trim()) {
       return new Response(
-        JSON.stringify({ error: "Missing required field: jobId" }),
+        JSON.stringify({ error: "Missing jobId or searchId" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }

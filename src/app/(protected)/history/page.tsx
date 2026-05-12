@@ -1,3 +1,5 @@
+//history/page.tsx
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -16,7 +18,6 @@ import {
 import { ScoreBadge } from "@/components/score-badge";
 import { useAuth } from "@/lib/auth-context";
 import { formatRelativeDate, truncate } from "@/lib/format";
-import { getSupabaseBrowserClient } from "@/lib/supabase";
 import type { SearchWithStats } from "@/lib/types";
 
 interface RawSearchRow {
@@ -36,54 +37,56 @@ export default function HistoryPage() {
   const userEmail = user?.email;
 
   useEffect(() => {
-    if (!userEmail) return;
+    if (!userEmail || !user?.jwt) return;
 
     let cancelled = false;
     async function load() {
-      const supabase = getSupabaseBrowserClient();
-      const { data, error } = await supabase
-        .from("searches")
-        .select("id, user_id, icp_prompt, created_at, search_results(match_score)")
-        .eq("user_id", userEmail!)
-        .order("created_at", { ascending: false });
+      try {
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_EDGE_FUNCTIONS_BASE_URL}/get-searches`,
+          {
+            method: "GET",
+            headers: {
+              "Authorization": `Bearer ${user!.jwt}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
 
-      if (cancelled) return;
+        if (!res.ok) throw new Error("Failed to fetch searches");
+        const json = await res.json();
 
-      if (error) {
+        if (cancelled) return;
+
+        const rows: SearchWithStats[] = (json.searches ?? []).map(
+          (s: RawSearchRow) => {
+            const scores = (s.search_results ?? [])
+              .map((r) => r.match_score)
+              .filter((v): v is number => typeof v === "number" && !Number.isNaN(v));
+            const positive = scores.filter((n) => n > 0);
+            const top = positive.length > 0 ? Math.max(...positive) : null;
+            return {
+              id: s.id,
+              user_id: s.user_id,
+              icp_prompt: s.icp_prompt,
+              created_at: s.created_at,
+              match_count: positive.length,
+              top_score: top,
+            };
+          }
+        );
+
+        setSearches(rows);
+      } catch {
         toast.error("Could not load search history.");
-        setLoading(false);
-        return;
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      const rows: SearchWithStats[] = ((data ?? []) as RawSearchRow[]).map(
-        (s) => {
-          const scores = (s.search_results ?? [])
-            .map((r) => r.match_score)
-            .filter(
-              (v): v is number => typeof v === "number" && !Number.isNaN(v)
-            );
-          const positive = scores.filter((n) => n > 0);
-          const top = positive.length > 0 ? Math.max(...positive) : null;
-          return {
-            id: s.id,
-            user_id: s.user_id,
-            icp_prompt: s.icp_prompt,
-            created_at: s.created_at,
-            match_count: positive.length,
-            top_score: top,
-          };
-        }
-      );
-
-      setSearches(rows);
-      setLoading(false);
     }
 
     void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [userEmail]);
+    return () => { cancelled = true; };
+  }, [userEmail, user?.jwt]);
 
   function viewResults(id: string) {
     router.push(`/?searchId=${encodeURIComponent(id)}`);
