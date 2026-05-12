@@ -19,7 +19,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BRAND = "#6d47f5";
 
 // Purchase / subscription page URL. Move to an env var if you want to parameterise it.
-const PURCHASE_URL = "https://linkyassistant.com/pricing";
+const PURCHASE_URL = "https://linkyassistant.com";
 
 type Step = "email" | "otp" | "expired";
 
