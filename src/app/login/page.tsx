@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -111,7 +112,14 @@ export default function LoginPage() {
   return (
     <div className="flex min-h-full flex-1 items-center justify-center bg-zinc-50 px-4 py-12">
       <div className="w-full max-w-[400px]">
-        <div className="mb-6 text-center">
+        <div className="mb-6 flex flex-col items-center gap-2">
+          <Image
+            src="/logo.png"
+            alt="Linky Scout"
+            width={80}
+            height={80}
+            priority
+          />
           <h1
             className="font-heading text-3xl font-semibold tracking-tight"
             style={{ color: BRAND }}
