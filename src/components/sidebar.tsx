@@ -67,7 +67,7 @@ export function Sidebar() {
             alt="Linky Scout"
             width={40}
             height={40}
-            className="object-contain"
+            className="h-auto object-contain"
           />
         </div>
         <div className="min-w-0">

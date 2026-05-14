@@ -70,7 +70,7 @@ function NewSearchSkeleton() {
           Find Your Ideal Leads
         </h1>
         <p className="text-sm text-muted-foreground">
-          Describe your ideal customer and let AI find them on LinkedIn.
+          Describe your ideal customer and let LinkyScout find them on LinkedIn.
         </p>
       </header>
       <Card className="rounded-2xl" />
@@ -327,7 +327,7 @@ function NewSearchView() {
           Find Your Ideal Leads
         </h1>
         <p className="text-base text-muted-foreground">
-          Describe your ideal customer and let AI find them on LinkedIn.
+          Describe your ideal customer and let LinkyScout find them on LinkedIn.
         </p>
       </header>
 

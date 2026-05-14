@@ -56,7 +56,10 @@ entrypoint = "./functions/score-profiles/index.ts"
 
 [functions.start-search]
 enabled = true
-verify_jwt = true
+# JWT is custom (signed with AUTH_JWT_SECRET by verify-otp), not a Supabase
+# auth JWT — the gateway cannot verify it, so we disable the gateway check
+# and validate the token inside the function (see verifyJwt in index.ts).
+verify_jwt = false
 import_map = "./functions/start-search/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx
@@ -89,7 +92,10 @@ entrypoint = "./functions/process-pending-jobs/index.ts"
 
 [functions.get-job-status]
 enabled = true
-verify_jwt = true
+# JWT is custom (signed with AUTH_JWT_SECRET by verify-otp), not a Supabase
+# auth JWT — the gateway cannot verify it, so we disable the gateway check
+# and validate the token inside the function (see verifyJwt in index.ts).
+verify_jwt = false
 import_map = "./functions/get-job-status/deno.json"
 # Uncomment to specify a custom file path to the entrypoint.
 # Supported file extensions are: .ts, .js, .mjs, .jsx, .tsx

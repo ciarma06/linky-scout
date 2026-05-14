@@ -2,16 +2,53 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { getCachedResults } from "../_shared/lead-providers/cache.ts";
 
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const JWT_SECRET = Deno.env.get("AUTH_JWT_SECRET")!;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const supabase = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-);
+const supabase = createClient(SUPABASE_URL, SERVICE_KEY);
+
+async function verifyJwt(token: string): Promise<{ email: string } | null> {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1]));
+    if (!payload.email || !payload.exp) return null;
+    if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+
+    const encoder = new TextEncoder();
+    const keyData = encoder.encode(JWT_SECRET);
+    const key = await crypto.subtle.importKey(
+      "raw", keyData,
+      { name: "HMAC", hash: "SHA-256" },
+      false, ["verify"],
+    );
+    const data = encoder.encode(`${parts[0]}.${parts[1]}`);
+    const sig = Uint8Array.from(
+      atob(parts[2].replace(/-/g, "+").replace(/_/g, "/")),
+      (c) => c.charCodeAt(0),
+    );
+    const valid = await crypto.subtle.verify("HMAC", key, sig, data);
+    if (!valid) return null;
+
+    return { email: payload.email };
+  } catch {
+    return null;
+  }
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -19,27 +56,31 @@ Deno.serve(async (req) => {
   }
 
   if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return jsonResponse({ error: "Method not allowed" }, 405);
+  }
+
+  const authHeader = req.headers.get("authorization") ?? "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  const auth = await verifyJwt(token);
+
+  if (!auth) {
+    return jsonResponse({ error: "Unauthorized" }, 401);
   }
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { icpPrompt, userEmail } = body as {
-      icpPrompt?: string;
-      userEmail?: string;
-    };
+    const { icpPrompt } = body as { icpPrompt?: string };
 
-    if (!icpPrompt?.trim() || !userEmail?.trim()) {
-      return new Response(
-        JSON.stringify({
-          error: "Missing required fields: icpPrompt and userEmail",
-        }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+    if (!icpPrompt?.trim()) {
+      return jsonResponse(
+        { error: "Missing required field: icpPrompt" },
+        400,
       );
     }
+
+    // The authenticated email from the JWT is the source of truth — we no
+    // longer trust the `userEmail` field that used to come from the body.
+    const userEmail = auth.email;
 
     const cacheResult = await getCachedResults(supabase, icpPrompt);
 
@@ -78,10 +119,11 @@ Deno.serve(async (req) => {
         await supabase.from("search_results").insert(rows);
       }
 
-      return new Response(
-        JSON.stringify({ cached: true, results: cacheResult.results, searchId }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return jsonResponse({
+        cached: true,
+        results: cacheResult.results,
+        searchId,
+      });
     }
 
     const { data: search, error: searchError } = await supabase
@@ -114,15 +156,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    return new Response(
-      JSON.stringify({ cached: false, jobId: job.id, searchId: search.id }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return jsonResponse({
+      cached: false,
+      jobId: job.id,
+      searchId: search.id,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Internal server error";
-    return new Response(
-      JSON.stringify({ error: message }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return jsonResponse({ error: message }, 500);
   }
 });

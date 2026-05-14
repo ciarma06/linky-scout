@@ -119,6 +119,7 @@ export default function LoginPage() {
             width={80}
             height={80}
             priority
+            className="h-auto"
           />
           <h1
             className="font-heading text-3xl font-semibold tracking-tight"

@@ -35,7 +35,7 @@ export function ThemeToggle({ className, variant = "icon" }: ThemeToggleProps) {
         onClick={handleToggle}
         aria-label="Toggle theme"
         className={cn(
-          "inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted",
+          "inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted",
           className
         )}
       >
@@ -59,7 +59,7 @@ export function ThemeToggle({ className, variant = "icon" }: ThemeToggleProps) {
       onClick={handleToggle}
       aria-label="Toggle theme"
       className={cn(
-        "inline-flex size-9 items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted",
+        "inline-flex size-9 cursor-pointer items-center justify-center rounded-xl border border-border bg-card text-foreground transition-colors hover:bg-muted",
         className
       )}
     >

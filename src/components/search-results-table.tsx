@@ -137,7 +137,7 @@ export function SearchResultsTable({
               <TableRow className="border-border">
                 <TableHead className="pl-6">Name</TableHead>
                 <TableHead>Headline</TableHead>
-                <TableHead>Location</TableHead>
+                <TableHead className="w-32">Location</TableHead>
                 <TableHead className="text-right">Followers</TableHead>
                 <TableHead className="text-center">Score</TableHead>
                 <TableHead className="pr-6 text-right">Actions</TableHead>
@@ -195,11 +195,14 @@ export function SearchResultsTable({
                         {truncate(r.headline, 60) || "—"}
                       </p>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="w-32 max-w-[8rem]">
                       {r.location ? (
-                        <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
-                          <MapPin className="size-3.5" />
-                          {r.location}
+                        <span
+                          className="inline-flex max-w-full items-center gap-1.5 text-sm text-muted-foreground"
+                          title={r.location}
+                        >
+                          <MapPin className="size-3.5 shrink-0" />
+                          <span className="truncate">{r.location}</span>
                         </span>
                       ) : (
                         <span className="text-sm text-muted-foreground">—</span>
