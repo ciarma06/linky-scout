@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { LogOut, Mail, ShieldCheck, Sun } from "lucide-react";
+import { Coins, LogOut, Mail, ShieldCheck, Sparkles, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +13,11 @@ import {
 } from "@/components/ui/card";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useAuth } from "@/lib/auth-context";
+import {
+  CURRENT_CREDITS,
+  GET_MORE_CREDITS_URL,
+  formatCredits,
+} from "@/lib/credits";
 import { cn } from "@/lib/utils";
 
 export default function SettingsPage() {
@@ -83,6 +88,46 @@ export default function SettingsPage() {
                 </div>
               }
             />
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-2xl">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Coins className="size-4 text-[#6d47f5]" />
+              Credits
+            </CardTitle>
+            <CardDescription>
+              Your available credits for searches and lead enrichment.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[#f59e0b]/15 text-[#b45309] dark:bg-[#f59e0b]/20 dark:text-[#fbbf24]">
+                <Coins className="size-4" />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Available
+                </span>
+                <span className="font-heading text-2xl font-semibold tabular-nums leading-none text-foreground">
+                  {formatCredits(CURRENT_CREDITS)}
+                </span>
+              </div>
+            </div>
+            <Button
+              asChild
+              className="rounded-xl bg-[#6d47f5] text-white hover:bg-[#6d47f5]/90"
+            >
+              <a
+                href={GET_MORE_CREDITS_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Sparkles className="size-4" />
+                Get more
+              </a>
+            </Button>
           </CardContent>
         </Card>
 

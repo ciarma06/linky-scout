@@ -1,8 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Clock, Radar, Search, Settings, Users } from "lucide-react";
+import { Clock, Search, Settings, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -60,8 +61,14 @@ export function Sidebar() {
   return (
     <aside className="flex h-screen w-[260px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
       <div className="flex items-center gap-3 px-5 pt-6 pb-4">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[#6d47f5] text-white shadow-sm">
-          <Radar className="size-5" />
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl overflow-hidden shadow-sm">
+          <Image
+            src="/logo.png"
+            alt="Linky Scout"
+            width={40}
+            height={40}
+            className="object-contain"
+          />
         </div>
         <div className="min-w-0">
           <p className="font-heading text-base font-bold leading-tight text-foreground">
