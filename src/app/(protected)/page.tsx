@@ -17,10 +17,13 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
+import { BuyCreditsModal } from "@/components/buy-credits-modal";
+import { InsufficientCreditsDialog } from "@/components/insufficient-credits-dialog";
 import { SearchResultsTable } from "@/components/search-results-table";
 import { useAuth } from "@/lib/auth-context";
+import { useCredits } from "@/lib/credits-context";
 import { stageLabel } from "@/lib/format";
-import { EDGE_FUNCTIONS_BASE_URL, getSupabaseBrowserClient } from "@/lib/supabase";
+import { EDGE_FUNCTIONS_BASE_URL } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import type {
   JobStatusResponse,
@@ -82,11 +85,17 @@ function NewSearchView() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
+  const { refresh: refreshCredits } = useCredits();
 
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [ui, setUi] = useState<UiState>(INITIAL_STATE);
   const [, setActiveJobId] = useState<string | null>(null);
+  const [creditsDialog, setCreditsDialog] = useState<{
+    open: boolean;
+    balance: number;
+  }>({ open: false, balance: 0 });
+  const [buyCreditsOpen, setBuyCreditsOpen] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearPolling = useCallback(() => {
@@ -262,10 +271,27 @@ function NewSearchView() {
         body: JSON.stringify({ icpPrompt: trimmed, userEmail: user.email }),
       });
 
-      const data = (await res.json()) as StartSearchResponse;
+      const data = (await res.json()) as StartSearchResponse & {
+        balance?: number;
+        required?: number;
+      };
+
+      if (res.status === 402 || data.error === "insufficient_credits") {
+        const balance = typeof data.balance === "number" ? data.balance : 0;
+        setCreditsDialog({ open: true, balance });
+        setUi(INITIAL_STATE);
+        // Refresh credits in the sidebar so the new balance is reflected.
+        void refreshCredits();
+        return;
+      }
+
       if (!res.ok || data.error) {
         throw new Error(data.error ?? `Request failed (${res.status})`);
       }
+
+      // Every successful start-search call has debited credits — refresh the
+      // sidebar balance so the user sees the updated total.
+      void refreshCredits();
 
       if (data.cached && data.results) {
         setUi({
@@ -275,7 +301,6 @@ function NewSearchView() {
           currentStage: "completed",
           error: null,
         });
-        toast.success("Found cached results in an instant.");
         return;
       }
 
@@ -284,7 +309,7 @@ function NewSearchView() {
         startPolling(data.jobId);
         toast.info(
           "⏱ Estimated time: 2–4 minutes. We'll notify you when results are ready.",
-          { duration: 8000 }
+          { duration: 8000 },
         );
       } else {
         throw new Error("Unexpected response from start-search.");
@@ -429,6 +454,19 @@ function NewSearchView() {
           userEmail={user?.email ?? ""}
         />
       )}
+
+      <InsufficientCreditsDialog
+        open={creditsDialog.open}
+        onOpenChange={(open) =>
+          setCreditsDialog((prev) => ({ ...prev, open }))
+        }
+        balance={creditsDialog.balance}
+        onBuyMore={() => setBuyCreditsOpen(true)}
+      />
+      <BuyCreditsModal
+        open={buyCreditsOpen}
+        onOpenChange={setBuyCreditsOpen}
+      />
     </div>
   );
 }

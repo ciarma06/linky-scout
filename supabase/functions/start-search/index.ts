@@ -1,14 +1,18 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { getCachedResults } from "../_shared/lead-providers/cache.ts";
+import { canUseScout, resolveAccess } from "../_shared/access.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const JWT_SECRET = Deno.env.get("AUTH_JWT_SECRET")!;
 
+const SEARCH_COST = 100;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -25,9 +29,11 @@ async function verifyJwt(token: string): Promise<{ email: string } | null> {
     const encoder = new TextEncoder();
     const keyData = encoder.encode(JWT_SECRET);
     const key = await crypto.subtle.importKey(
-      "raw", keyData,
+      "raw",
+      keyData,
       { name: "HMAC", hash: "SHA-256" },
-      false, ["verify"],
+      false,
+      ["verify"],
     );
     const data = encoder.encode(`${parts[0]}.${parts[1]}`);
     const sig = Uint8Array.from(
@@ -50,6 +56,37 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
+interface DeductResult {
+  success: boolean;
+  new_balance: number;
+  used_from: string | null;
+}
+
+async function deductCredits(
+  email: string,
+  amount: number,
+  searchId: string,
+): Promise<DeductResult> {
+  const { data, error } = await supabase.rpc("deduct_search_credits", {
+    p_email: email,
+    p_amount: amount,
+    p_search_id: searchId,
+  });
+
+  if (error) {
+    console.error("[start-search] deduct_search_credits error:", error);
+    throw new Error(error.message);
+  }
+
+  // The RPC returns a row (TABLE return) — supabase-js gives an array.
+  const row = Array.isArray(data) ? data[0] : data;
+  return {
+    success: Boolean(row?.success),
+    new_balance: typeof row?.new_balance === "number" ? row.new_balance : 0,
+    used_from: typeof row?.used_from === "string" ? row.used_from : null,
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -67,6 +104,21 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "Unauthorized" }, 401);
   }
 
+  // ── Plan check ───────────────────────────────────────────────────────
+  const access = await resolveAccess(
+    auth.email,
+    SUPABASE_URL,
+    SERVICE_KEY,
+    "scout",
+  );
+
+  if (!canUseScout(access)) {
+    return jsonResponse(
+      { error: "Unauthorized", access: access.access },
+      401,
+    );
+  }
+
   try {
     const body = await req.json().catch(() => ({}));
     const { icpPrompt } = body as { icpPrompt?: string };
@@ -78,28 +130,60 @@ Deno.serve(async (req) => {
       );
     }
 
-    // The authenticated email from the JWT is the source of truth — we no
-    // longer trust the `userEmail` field that used to come from the body.
+    // The authenticated email from the JWT is the source of truth.
     const userEmail = auth.email;
 
+    // We need a searchId BEFORE deducting credits so the transaction can
+    // be linked to the search. Create the row first; if deduction fails
+    // we delete it. Cache check happens after — the search row exists
+    // either way so the user sees it in their history.
+    const { data: search, error: searchError } = await supabase
+      .from("searches")
+      .insert({ user_id: userEmail, icp_prompt: icpPrompt })
+      .select("id")
+      .single();
+
+    if (searchError || !search) {
+      throw new Error(
+        `Failed to create search: ${searchError?.message ?? "unknown error"}`,
+      );
+    }
+
+    const searchId = search.id as string;
+
+    // ── Deduct credits (cache hits ALSO cost — cache is invisible) ──────
+    let deduct: DeductResult;
+    try {
+      deduct = await deductCredits(userEmail, SEARCH_COST, searchId);
+    } catch (err) {
+      // Roll back the search row we just created so we don't leave orphans.
+      await supabase.from("searches").delete().eq("id", searchId);
+      const message = err instanceof Error ? err.message : "Credit error";
+      return jsonResponse({ error: message }, 500);
+    }
+
+    if (!deduct.success) {
+      // Insufficient balance — undo the search row.
+      await supabase.from("searches").delete().eq("id", searchId);
+      return jsonResponse(
+        {
+          error: "insufficient_credits",
+          balance: deduct.new_balance,
+          required: SEARCH_COST,
+        },
+        402,
+      );
+    }
+
+    // ── Cache check ─────────────────────────────────────────────────────
     const cacheResult = await getCachedResults(supabase, icpPrompt);
 
     if (cacheResult.hit) {
-      // Record in history even for cached results
-      const { data: search } = await supabase
-        .from("searches")
-        .insert({ user_id: userEmail, icp_prompt: icpPrompt })
-        .select("id")
-        .single();
-
-      const searchId = search?.id;
-
-      // ── FIX: inserisci i risultati cached anche in search_results ──
-      // Così la history page e "View Results" trovano i dati associati
-      // a questo searchId, invece di mostrare 0 matches.
-      if (searchId && Array.isArray(cacheResult.results) && cacheResult.results.length > 0) {
+      if (
+        Array.isArray(cacheResult.results) &&
+        cacheResult.results.length > 0
+      ) {
         type CachedRow = Record<string, unknown>;
-
         const rows = (cacheResult.results as CachedRow[]).map((r) => ({
           search_id: searchId,
           linkedin_urn: r.linkedin_urn ?? "",
@@ -126,22 +210,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { data: search, error: searchError } = await supabase
-      .from("searches")
-      .insert({ user_id: userEmail, icp_prompt: icpPrompt })
-      .select("id")
-      .single();
-
-    if (searchError || !search) {
-      throw new Error(
-        `Failed to create search: ${searchError?.message ?? "unknown error"}`,
-      );
-    }
-
+    // ── Live job ────────────────────────────────────────────────────────
     const { data: job, error: jobError } = await supabase
       .from("search_jobs")
       .insert({
-        search_id: search.id,
+        search_id: searchId,
         user_id: userEmail,
         status: "pending",
         progress: 0,
@@ -159,9 +232,10 @@ Deno.serve(async (req) => {
     return jsonResponse({
       cached: false,
       jobId: job.id,
-      searchId: search.id,
+      searchId,
     });
   } catch (err) {
+    console.error("[start-search] unexpected error:", err);
     const message = err instanceof Error ? err.message : "Internal server error";
     return jsonResponse({ error: message }, 500);
   }

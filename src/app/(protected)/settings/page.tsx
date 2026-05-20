@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Coins, LogOut, Mail, ShieldCheck, Sparkles, Sun } from "lucide-react";
+import { Coins, LogOut, Mail, ShieldCheck, ShoppingCart, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -11,26 +12,28 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { BuyCreditsModal } from "@/components/buy-credits-modal";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useAuth } from "@/lib/auth-context";
-import {
-  CURRENT_CREDITS,
-  GET_MORE_CREDITS_URL,
-  formatCredits,
-} from "@/lib/credits";
+import { useCredits } from "@/lib/credits-context";
+import { formatCredits, totalCredits } from "@/lib/credits";
 import { cn } from "@/lib/utils";
 
 export default function SettingsPage() {
   const router = useRouter();
   const { user, logout } = useAuth();
+  const { credits, isLoading } = useCredits();
+  const [buyCreditsOpen, setBuyCreditsOpen] = useState(false);
 
   function handleLogout() {
     logout();
     router.replace("/login");
   }
 
-  const planLabel = formatPlan(user?.access);
-  const planTone = planTones(user?.access);
+  const planLabel = formatPlan(user?.plan, user?.access);
+  const planTone = planTones(user?.plan, user?.access);
+  const balance = totalCredits(credits);
+  const locked = user?.plan === "assistant";
 
   return (
     <div className="flex flex-col gap-8">
@@ -39,7 +42,7 @@ export default function SettingsPage() {
           Settings
         </h1>
         <p className="text-base text-muted-foreground">
-          Manage your account and preferences.
+          Manage your account, plan and credits.
         </p>
       </header>
 
@@ -71,7 +74,7 @@ export default function SettingsPage() {
                   <span
                     className={cn(
                       "inline-flex h-6 items-center rounded-full px-2.5 text-xs font-medium",
-                      planTone
+                      planTone,
                     )}
                   >
                     {planLabel}
@@ -91,43 +94,85 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-2xl">
+        <Card id="credits" className="scroll-mt-24 rounded-2xl">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
               <Coins className="size-4 text-[#6d47f5]" />
               Credits
             </CardTitle>
             <CardDescription>
-              Your available credits for searches and lead enrichment.
+              Each search costs 100 credits. Top up any time.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[#f59e0b]/15 text-[#b45309] dark:bg-[#f59e0b]/20 dark:text-[#fbbf24]">
-                <Coins className="size-4" />
+          <CardContent className="flex flex-col gap-5">
+            <div className="flex flex-wrap items-end justify-between gap-4 rounded-2xl bg-muted/40 p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[#f59e0b]/15 text-[#b45309] dark:bg-[#f59e0b]/20 dark:text-[#fbbf24]">
+                  <Coins className="size-4" />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Available balance
+                  </span>
+                  <span
+                    className={cn(
+                      "font-heading text-3xl font-semibold tabular-nums leading-none text-foreground",
+                      isLoading && !credits && "opacity-50",
+                    )}
+                  >
+                    {isLoading && !credits ? "—" : formatCredits(balance)}
+                  </span>
+                </div>
               </div>
-              <div className="flex flex-col">
-                <span className="text-xs font-medium text-muted-foreground">
-                  Available
-                </span>
-                <span className="font-heading text-2xl font-semibold tabular-nums leading-none text-foreground">
-                  {formatCredits(CURRENT_CREDITS)}
-                </span>
-              </div>
+              {credits && (
+                <div className="flex flex-col items-start text-xs text-muted-foreground sm:items-end">
+                  <span>
+                    Subscription:{" "}
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {formatCredits(credits.subscription_credits)}
+                    </span>
+                  </span>
+                  <span>
+                    Packs:{" "}
+                    <span className="font-semibold tabular-nums text-foreground">
+                      {formatCredits(credits.pack_credits)}
+                    </span>
+                  </span>
+                </div>
+              )}
             </div>
-            <Button
-              asChild
-              className="rounded-xl bg-[#6d47f5] text-white hover:bg-[#6d47f5]/90"
-            >
-              <a
-                href={GET_MORE_CREDITS_URL}
-                target="_blank"
-                rel="noopener noreferrer"
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <p className="font-heading text-sm font-semibold text-foreground">
+                  Need more credits?
+                </p>
+                {locked ? (
+                  <p className="text-xs text-muted-foreground">
+                    Upgrade to Scout or Bundle to buy credit packs.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    One-off packs — they never expire and stack on top of your
+                    subscription credits.
+                  </p>
+                )}
+              </div>
+              <Button
+                type="button"
+                disabled={locked}
+                title={
+                  locked
+                    ? "Upgrade to Scout or Bundle to buy credit packs"
+                    : undefined
+                }
+                onClick={() => setBuyCreditsOpen(true)}
+                className="shrink-0 rounded-xl bg-[#6d47f5] text-white hover:bg-[#6d47f5]/90 disabled:opacity-50"
               >
-                <Sparkles className="size-4" />
-                Get more
-              </a>
-            </Button>
+                <ShoppingCart className="size-4" />
+                Get More Credits
+              </Button>
+            </div>
           </CardContent>
         </Card>
 
@@ -166,6 +211,11 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      <BuyCreditsModal
+        open={buyCreditsOpen}
+        onOpenChange={setBuyCreditsOpen}
+      />
     </div>
   );
 }
@@ -184,7 +234,7 @@ function Row({ icon, iconBg, label, value }: RowProps) {
         <div
           className={cn(
             "flex size-9 shrink-0 items-center justify-center rounded-xl",
-            iconBg
+            iconBg,
           )}
         >
           {icon}
@@ -198,24 +248,35 @@ function Row({ icon, iconBg, label, value }: RowProps) {
   );
 }
 
-function formatPlan(access: string | null | undefined): string {
+function formatPlan(
+  plan: string | null | undefined,
+  access: string | null | undefined,
+): string {
+  if (plan === "scout") return "Scout";
+  if (plan === "bundle") return "Bundle";
+  if (plan === "assistant") return "Assistant";
   if (!access) return "—";
-  const value = access.toLowerCase();
-  if (value === "premium") return "Premium";
-  if (value === "expired") return "Expired";
-  if (value === "expired_premium") return "Expired";
-  if (value === "trial" || value === "active") return "Trial";
+  const v = access.toLowerCase();
+  if (v.includes("expired")) return "Expired";
+  if (v === "premium") return "Premium";
+  if (v === "waitlist_trial" || v === "trial" || v === "active") return "Trial";
   return access.charAt(0).toUpperCase() + access.slice(1);
 }
 
-function planTones(access: string | null | undefined): string {
+function planTones(
+  plan: string | null | undefined,
+  access: string | null | undefined,
+): string {
+  if (plan === "scout" || plan === "bundle") {
+    return "bg-[#6d47f5]/10 text-[#6d47f5] dark:bg-[#6d47f5]/20 dark:text-[#a48cff]";
+  }
+  if (plan === "assistant") {
+    return "bg-[#f59e0b]/10 text-[#b45309] dark:bg-[#f59e0b]/20 dark:text-[#fbbf24]";
+  }
   if (!access) return "bg-muted text-muted-foreground";
   const v = access.toLowerCase();
   if (v.includes("expired")) {
     return "bg-[#ef4444]/10 text-[#ef4444] dark:bg-[#ef4444]/20 dark:text-[#fca5a5]";
-  }
-  if (v === "premium") {
-    return "bg-[#6d47f5]/10 text-[#6d47f5] dark:bg-[#6d47f5]/20 dark:text-[#a48cff]";
   }
   return "bg-[#10b981]/15 text-[#047857] dark:bg-[#10b981]/20 dark:text-[#34d399]";
 }

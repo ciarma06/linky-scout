@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { canUseScout, resolveAccess } from "../_shared/access.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -52,6 +53,20 @@ Deno.serve(async (req) => {
   if (!payload) {
     return new Response(
       JSON.stringify({ error: "Unauthorized" }),
+      { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
+  const access = await resolveAccess(
+    payload.email,
+    SUPABASE_URL,
+    SERVICE_KEY,
+    "scout",
+  );
+
+  if (!canUseScout(access)) {
+    return new Response(
+      JSON.stringify({ error: "Unauthorized", access: access.access }),
       { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

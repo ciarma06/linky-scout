@@ -9,12 +9,16 @@
  * only Content-Type: application/json.
  */
 
+export type AuthPlan = "assistant" | "scout" | "bundle";
+
 export interface AuthState {
   jwt: string;
   email: string;
   access: string;
   expiresAt: string;
   daysLeft: number;
+  plan?: AuthPlan;
+  checkedAt?: string;
 }
 
 export type VerifyOtpResult = AuthState | { error: string; access?: string };
@@ -148,6 +152,13 @@ export async function verifyOtp(
     const data = await safeJson(res);
 
     if (data && typeof data.jwt === "string") {
+      const plan =
+        data.plan === "assistant" ||
+        data.plan === "scout" ||
+        data.plan === "bundle"
+          ? (data.plan as AuthPlan)
+          : undefined;
+
       return {
         jwt: data.jwt,
         email: typeof data.email === "string" ? data.email : email,
@@ -156,6 +167,8 @@ export async function verifyOtp(
           typeof data.expiresAt === "string" ? data.expiresAt : "",
         daysLeft:
           typeof data.daysLeft === "number" ? data.daysLeft : 0,
+        plan,
+        checkedAt: new Date().toISOString(),
       };
     }
 

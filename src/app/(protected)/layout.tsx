@@ -3,9 +3,9 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-import { CreditsBadge } from "@/components/credits-badge";
 import { Sidebar } from "@/components/sidebar";
 import { useAuth } from "@/lib/auth-context";
+import { CreditsProvider } from "@/lib/credits-context";
 
 export default function ProtectedLayout({
   children,
@@ -16,8 +16,13 @@ export default function ProtectedLayout({
   const { user, isLoading } = useAuth();
 
   useEffect(() => {
-    if (!isLoading && !user) {
+    if (isLoading) return;
+    if (!user) {
       router.replace("/login");
+      return;
+    }
+    if (user.plan === "assistant") {
+      router.replace("/upgrade");
     }
   }, [isLoading, user, router]);
 
@@ -39,17 +44,21 @@ export default function ProtectedLayout({
     return null;
   }
 
+  // user.plan === 'assistant' is also a hard block — the effect above redirects
+  // to /upgrade, render nothing in the meantime so we don't briefly flash the
+  // dashboard.
+  if (user.plan === "assistant") {
+    return null;
+  }
+
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto">
-        <div className="sticky top-0 z-20 border-b border-border bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/70">
-          <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-end px-8">
-            <CreditsBadge />
-          </div>
-        </div>
-        <div className="mx-auto w-full max-w-6xl px-8 py-10">{children}</div>
-      </main>
-    </div>
+    <CreditsProvider>
+      <div className="flex h-screen overflow-hidden bg-background">
+        <Sidebar />
+        <main className="flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-6xl px-8 py-10">{children}</div>
+        </main>
+      </div>
+    </CreditsProvider>
   );
 }

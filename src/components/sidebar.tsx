@@ -8,6 +8,7 @@ import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
+import { CreditBalance } from "@/components/credit-balance";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface NavItem {
@@ -80,7 +81,11 @@ export function Sidebar() {
         </div>
       </div>
 
-      <div className="px-3 py-2">
+      <div className="px-4 pb-3">
+        <CreditBalance compact />
+      </div>
+
+      <div className="px-3">
         <div className="h-px w-full bg-sidebar-border" />
       </div>
 
