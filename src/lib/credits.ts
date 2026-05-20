@@ -6,7 +6,7 @@ export const SEARCH_COST = 100;
 
 export const GET_MORE_CREDITS_URL = "https://linkyassistant.com/#pricing";
 export const CREATE_CHECKOUT_URL =
-  "https://linkyassistant.com/api/create-checkout";
+  "https://www.linkyassistant.com/api/create-checkout";
 
 export interface CreditPack {
   id: string;
