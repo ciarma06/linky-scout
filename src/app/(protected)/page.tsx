@@ -201,6 +201,8 @@ function NewSearchView() {
             currentStage: "completed",
             error: null,
           });
+          // Re-sync the sidebar balance once the job is fully done.
+          void refreshCredits();
           return;
         }
 
@@ -224,7 +226,7 @@ function NewSearchView() {
         toast.error(message);
       }
     },
-    [userJwt, clearPolling]
+    [userJwt, clearPolling, refreshCredits]
   );
 
   const startPolling = useCallback(

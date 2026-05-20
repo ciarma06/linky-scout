@@ -46,7 +46,7 @@ export function BuyCreditsModal({ open, onOpenChange }: BuyCreditsModalProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="w-full sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="text-xl">Get more credits</DialogTitle>
           <DialogDescription>
@@ -60,7 +60,7 @@ export function BuyCreditsModal({ open, onOpenChange }: BuyCreditsModalProps) {
           </p>
         )}
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           {CREDIT_PACKS.map((pack) => {
             const busy = pendingId === pack.id;
             const disabled = locked || (pendingId !== null && !busy);
@@ -69,7 +69,7 @@ export function BuyCreditsModal({ open, onOpenChange }: BuyCreditsModalProps) {
               <div
                 key={pack.id}
                 className={cn(
-                  "flex flex-col gap-3 rounded-2xl border bg-card p-4 transition-colors",
+                  "flex min-w-0 flex-col overflow-hidden rounded-2xl border bg-card transition-colors",
                   pack.recommended
                     ? "border-[#6d47f5] ring-1 ring-[#6d47f5]/30"
                     : "border-border",
@@ -81,62 +81,74 @@ export function BuyCreditsModal({ open, onOpenChange }: BuyCreditsModalProps) {
                     : undefined
                 }
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="font-heading text-sm font-semibold text-foreground">
+                {/* Badge strip — only for recommended pack */}
+                {pack.recommended ? (
+                  <div className="flex items-center justify-center bg-[#6d47f5]/10 py-1.5 dark:bg-[#6d47f5]/20">
+                    <span className="text-[11px] font-semibold uppercase tracking-widest text-[#6d47f5] dark:text-[#a48cff]">
+                      ✦ Most Popular
+                    </span>
+                  </div>
+                ) : (
+                  /* Invisible spacer so all cards are the same height */
+                  <div className="py-1.5" aria-hidden />
+                )}
+
+                <div className="flex flex-1 flex-col gap-4 p-5">
+                  {/* Name + tagline */}
+                  <div className="flex flex-col gap-1">
+                    <p className="font-heading text-base font-bold text-foreground">
                       {pack.name}
                     </p>
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs leading-relaxed text-muted-foreground">
                       {pack.tagline}
                     </p>
                   </div>
-                  {pack.recommended && (
-                    <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-[#6d47f5] px-2 text-[10px] font-semibold uppercase tracking-wide text-white">
-                      Most Popular
+
+                  {/* Credits count */}
+                  <div className="flex flex-col gap-0.5">
+                    <span className="font-heading text-3xl font-bold tabular-nums leading-none text-foreground">
+                      {formatCredits(pack.credits)}
                     </span>
-                  )}
-                </div>
+                    <span className="text-xs font-medium text-muted-foreground">
+                      credits
+                    </span>
+                  </div>
 
-                <div className="flex items-baseline gap-1.5">
-                  <span className="font-heading text-2xl font-semibold tabular-nums leading-none text-foreground">
-                    {formatCredits(pack.credits)}
-                  </span>
-                  <span className="text-xs font-medium text-muted-foreground">
-                    credits
-                  </span>
-                  <span className="ml-auto text-sm font-semibold text-foreground">
+                  {/* Price */}
+                  <p className="font-heading text-xl font-semibold tabular-nums text-foreground">
                     {pack.priceLabel}
-                  </span>
-                </div>
+                  </p>
 
-                <Button
-                  type="button"
-                  onClick={() => handlePurchase(pack.priceId, pack.id)}
-                  disabled={disabled}
-                  title={
-                    locked
-                      ? "Upgrade to Scout or Bundle to buy credit packs"
-                      : undefined
-                  }
-                  className={cn(
-                    "h-9 w-full rounded-xl text-sm",
-                    pack.recommended
-                      ? "bg-[#6d47f5] text-white hover:bg-[#6d47f5]/90"
-                      : "bg-foreground/90 text-background hover:bg-foreground",
-                  )}
-                >
-                  {busy ? (
-                    <>
-                      <Loader2 className="size-4 animate-spin" />
-                      Loading...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="size-4" />
-                      Buy now
-                    </>
-                  )}
-                </Button>
+                  {/* CTA */}
+                  <Button
+                    type="button"
+                    onClick={() => handlePurchase(pack.priceId, pack.id)}
+                    disabled={disabled}
+                    title={
+                      locked
+                        ? "Upgrade to Scout or Bundle to buy credit packs"
+                        : undefined
+                    }
+                    className={cn(
+                      "mt-auto h-10 w-full rounded-xl text-sm font-semibold",
+                      pack.recommended
+                        ? "bg-[#6d47f5] text-white hover:bg-[#6d47f5]/90"
+                        : "bg-foreground/90 text-background hover:bg-foreground",
+                    )}
+                  >
+                    {busy ? (
+                      <>
+                        <Loader2 className="size-4 animate-spin" />
+                        Loading...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="size-4" />
+                        Buy now
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
             );
           })}

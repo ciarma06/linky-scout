@@ -8,7 +8,6 @@ import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
-import { CreditBalance } from "@/components/credit-balance";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface NavItem {
@@ -79,10 +78,6 @@ export function Sidebar() {
             Find your perfect leads
           </p>
         </div>
-      </div>
-
-      <div className="px-4 pb-3">
-        <CreditBalance compact />
       </div>
 
       <div className="px-3">

@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 import { Sidebar } from "@/components/sidebar";
+import { CreditBalance } from "@/components/credit-balance";
 import { useAuth } from "@/lib/auth-context";
 import { CreditsProvider } from "@/lib/credits-context";
 
@@ -55,7 +56,10 @@ export default function ProtectedLayout({
     <CreditsProvider>
       <div className="flex h-screen overflow-hidden bg-background">
         <Sidebar />
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex flex-1 flex-col overflow-y-auto">
+          <header className="sticky top-0 z-10 flex items-center justify-end border-b border-border bg-background/80 px-8 py-3 backdrop-blur-sm">
+            <CreditBalance />
+          </header>
           <div className="mx-auto w-full max-w-6xl px-8 py-10">{children}</div>
         </main>
       </div>
