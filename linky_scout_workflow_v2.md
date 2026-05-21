@@ -1,5 +1,5 @@
-# Linky Scout — Workflow di sviluppo v2
-*Aggiornato con tutte le migliorie implementate*
+# Linky Scout — Workflow di sviluppo v3
+*Aggiornato: maggio 2026 — stack, crediti, piani, pipeline ICP*
 
 ---
 
@@ -7,16 +7,20 @@
 
 | Componente | Scelta |
 |---|---|
-| Frontend | Next.js 14 (App Router) + TypeScript + Tailwind + shadcn/ui |
-| Font | Sora (titoli) + DM Sans (body) via next/font/google |
+| Frontend | Next.js **16** (App Router) + TypeScript + **Tailwind 4** + shadcn/ui v4 (**radix-nova**, base **neutral**) |
+| React | **19** |
+| Font | Sora (titoli, `--font-heading`) + DM Sans (body, `--font-sans`) via `next/font/google` |
 | Backend | Supabase Edge Functions (Deno) |
 | Database | Supabase Postgres (stesso progetto di Linky Assistant) |
-| Auth | Stesso sistema OTP di Linky Assistant (request-otp + verify-otp) |
-| Lead data | LinkdAPI (header auth: `x-linkdapi-apikey`) |
-| AI | Claude Sonnet (`claude-sonnet-4-6`) via Edge Function |
+| Auth | OTP Linky Assistant (`request-otp` + `verify-otp`) + magic link `/auth?token=...` |
+| Piani | `user_subscriptions` — `assistant` \| `scout` \| `bundle` |
+| Access control | `_shared/access.ts` (`resolveAccess`, `canUseScout`) |
+| Crediti | `user_credits` + RPC `deduct_search_credits` — **100 crediti per ricerca** |
+| Lead data | LinkdAPI (header: `x-linkdapi-apikey`) |
+| AI | Claude Sonnet (`claude-sonnet-4-6`) — parse ICP + scoring |
 | Hosting | Vercel (frontend) + Supabase (backend) |
-| Job queue | Tabella `search_jobs` + Edge Function chain |
-| Caching | Tabella `search_cache`, TTL 7 giorni, hash SHA-256 |
+| Job queue | `search_jobs` + `next_stage` + `process-search-job` (uno stage per invocazione) + `process-pending-jobs` (cron) |
+| Caching | `search_cache`, TTL 7 giorni, hash SHA-256 su ICP normalizzato |
 
 ---
 
@@ -38,37 +42,38 @@ npm install -g pnpm
 pnpm create next-app@latest . --typescript --tailwind --app --src-dir --import-alias "@/*"
 ```
 
-**0.6** — Se pnpm chiede di approvare build scripts → premi `a` per selezionare tutto → Invio
+**0.6** — Se pnpm chiede di approvare build scripts → premi `a` → Invio
 
-**0.7** — Avvia dev server per verificare:
+**0.7** — Avvia dev server:
 ```powershell
 pnpm dev
 ```
 
-**0.8** — Installa shadcn/ui:
+**0.8** — Init shadcn/ui:
 ```powershell
 pnpm dlx shadcn@latest init
 ```
-Scegli: Radix → Nova → Slate → Yes CSS variables
+Scegli: **Radix → Nova → Neutral → Yes CSS variables** (come in `components.json`)
 
-**0.9** — Installa componenti shadcn:
+**0.9** — Componenti shadcn:
 ```powershell
 pnpm dlx shadcn@latest add button input textarea card table badge progress dialog sheet separator avatar dropdown-menu sonner
 ```
 
-**0.10** — Installa dipendenze:
+**0.10** — Dipendenze:
 ```powershell
-pnpm add @supabase/supabase-js @supabase/ssr @anthropic-ai/sdk
+pnpm add @supabase/supabase-js @supabase/ssr next-themes
 ```
+(`@anthropic-ai/sdk` non serve nel frontend — Claude è solo nelle Edge Functions)
 
-**0.11** — Crea `.env.local` nella root:
+**0.11** — `.env.local`:
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGc...
 NEXT_PUBLIC_EDGE_FUNCTIONS_BASE_URL=https://xxx.supabase.co/functions/v1
 ```
 
-**0.12** — Aggiungi al `tsconfig.json`:
+**0.12** — `tsconfig.json` — escludi le Edge Functions:
 ```json
 {
   "compilerOptions": {
@@ -79,7 +84,7 @@ NEXT_PUBLIC_EDGE_FUNCTIONS_BASE_URL=https://xxx.supabase.co/functions/v1
 }
 ```
 
-**0.13** — Crea `supabase/functions/deno.json`:
+**0.13** — `supabase/functions/deno.json` (per ogni function o condiviso):
 ```json
 {
   "imports": { "@supabase/functions-js": "jsr:@supabase/functions-js@^2" },
@@ -87,13 +92,17 @@ NEXT_PUBLIC_EDGE_FUNCTIONS_BASE_URL=https://xxx.supabase.co/functions/v1
 }
 ```
 
-**0.14** — Push su GitHub + deploy su Vercel
+**0.14** — `src/middleware.ts`: pass-through (il JWT è in `localStorage`, non leggibile server-side). La protezione route è client-side: `AuthContext` + `(protected)/layout.tsx`.
+
+**0.15** — Push GitHub + deploy Vercel
 
 ---
 
-## FASE 1 — Database Setup (Supabase esistente di Linky)
+## FASE 1 — Database (Supabase condiviso con Linky)
 
-**1.1** — Crea tabella `searches`:
+### Tabelle Scout
+
+**1.1** — `searches`:
 ```sql
 CREATE TABLE searches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -104,7 +113,7 @@ CREATE TABLE searches (
 );
 ```
 
-**1.2** — Crea tabella `search_jobs`:
+**1.2** — `search_jobs` (nota colonna **`next_stage`** per l'orchestratore):
 ```sql
 CREATE TABLE search_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -113,6 +122,7 @@ CREATE TABLE search_jobs (
   status TEXT NOT NULL DEFAULT 'pending',
   progress INT DEFAULT 0,
   current_stage TEXT,
+  next_stage TEXT,
   parsed_filters JSONB,
   error_message TEXT,
   started_at TIMESTAMP,
@@ -121,7 +131,7 @@ CREATE TABLE search_jobs (
 );
 ```
 
-**1.3** — Crea tabella `search_results`:
+**1.3** — `search_results`:
 ```sql
 CREATE TABLE search_results (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -142,7 +152,7 @@ CREATE TABLE search_results (
 );
 ```
 
-**1.4** — Crea tabella `search_cache`:
+**1.4** — `search_cache`:
 ```sql
 CREATE TABLE search_cache (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -156,21 +166,19 @@ CREATE INDEX idx_cache_hash ON search_cache(icp_hash);
 CREATE INDEX idx_cache_expires ON search_cache(expires_at);
 ```
 
-**1.5** — Aggiungi colonna `source` a `profili_salvati` (tabella CRM di Linky Assistant):
+**1.5** — `profili_salvati` (CRM Linky Assistant):
 ```sql
 ALTER TABLE profili_salvati ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'extension';
 ```
 
-**1.6** — Abilita RLS su `searches`, `search_jobs`, `search_results`. **NON** su `search_cache`.
+**1.6** — RLS su `searches`, `search_jobs`, `search_results`. **NON** su `search_cache`.
 
-**1.7** — RLS policies (usano `user_id TEXT` non UUID):
+**1.7** — RLS policies (`user_id` TEXT = email dal JWT custom):
 ```sql
--- Elimina policy esistenti se presenti
 DROP POLICY IF EXISTS "Users see own searches" ON searches;
 DROP POLICY IF EXISTS "Users see own jobs" ON search_jobs;
 DROP POLICY IF EXISTS "Users see results of own searches" ON search_results;
 
--- Ricrea con TEXT comparison
 CREATE POLICY "Users see own searches" ON searches
   FOR ALL USING (user_id = current_setting('request.jwt.claims', true)::json->>'email');
 
@@ -183,7 +191,212 @@ CREATE POLICY "Users see results of own searches" ON search_results
   );
 ```
 
-> ⚠️ **Nota importante**: Le policy RLS con JWT custom non funzionano con il client browser (anon key). Usa sempre SERVICE_ROLE_KEY lato Edge Function per leggere/scrivere dati utente.
+> Le policy RLS con JWT custom **non funzionano** con il client browser anon su `searches` / `search_results`. Le query utente passano da Edge Functions con `SERVICE_ROLE_KEY` + verifica JWT manuale. Eccezione: `profili_salvati` su `/leads` usa ancora il client anon filtrato per `user_email`.
+
+### FASE 1b — Abbonamenti e crediti (DB Linky Assistant)
+
+Schema gestito insieme a Linky Assistant (non in `supabase/migrations` di questo repo):
+
+| Tabella / RPC | Uso in Scout |
+|---|---|
+| `user_subscriptions` | `email`, `plan`, `status`, `current_period_end` → accesso Scout |
+| `user_credits` | `subscription_credits`, `pack_credits`, `credits_period_end`, … |
+| `deduct_search_credits(p_email, p_amount, p_search_id)` | Addebito atomico in `start-search` |
+
+- Costo ricerca: **`SEARCH_COST = 100`** (anche su **cache hit** — la cache non è gratuita per l'utente).
+- Pack acquistabili: definiti in `src/lib/credits.ts` (Trial 100, Growth 500, Scale 1000 crediti).
+- Checkout Stripe: `POST https://www.linkyassistant.com/api/create-checkout` con `{ priceId, email }`.
+
+---
+
+## Pipeline ICP — Ricerca lead (cuore del prodotto)
+
+> Branch attivo per miglioramenti: **`Miglioramento_Ricerca`**.  
+> Questa sezione descrive il comportamento **attuale** del codice — utile come baseline prima di ottimizzare parse, filtri o scoring.
+
+### Panoramica end-to-end
+
+```mermaid
+sequenceDiagram
+  participant U as Utente (/)
+  participant SS as start-search
+  participant DB as Postgres
+  participant PP as process-pending-jobs
+  participant PS as process-search-job
+  participant PI as parse-icp
+  participant S1 as stage1-search
+  participant S2 as stage2-enrich
+  participant SC as score-profiles
+  participant L as LinkdAPI
+
+  U->>SS: POST { icpPrompt } + JWT
+  SS->>SS: resolveAccess(scout) + deduct 100 crediti
+  SS->>DB: INSERT searches
+  alt Cache hit (stesso ICP normalizzato)
+    SS->>DB: INSERT search_results da cache
+    SS-->>U: { cached: true, results, searchId }
+  else Cache miss
+    SS->>DB: INSERT search_jobs (pending, queued)
+    SS-->>U: { cached: false, jobId, searchId }
+    U->>U: poll get-job-status ogni 3s
+    PP->>PS: stage start (cron o trigger)
+    PS->>PI: prompt ICP → filtri JSON
+    PS->>DB: parsed_filters, next_stage=search
+    PP->>PS: stage search
+    PS->>S1: searchId + filters
+    S1->>L: search/people + profile/overview
+    S1->>DB: INSERT search_results (score null)
+    PP->>PS: stage enrich
+    PS->>S2: searchId
+    S2->>L: profile/details + posts/all
+    S2->>DB: UPDATE bio, recent_posts
+    PP->>PS: stage score
+    PS->>SC: searchId + icpPrompt (testo originale)
+    SC->>SC: Claude valuta bio + post
+    SC->>DB: UPDATE match_score, match_reason, best_context
+    PP->>PS: stage finalize
+    PS->>DB: search_cache upsert + job completed
+    U->>U: risultati ordinati per match_score
+  end
+```
+
+### Cosa fa l'utente (frontend)
+
+1. Scrive un **prompt ICP in linguaggio naturale** su `/` (textarea + chip di esempio).
+2. Submit → `start-search` con `{ icpPrompt }` e `Authorization: Bearer <JWT>`.
+3. Se `cached: true` → risultati immediati (dopo addebito crediti).
+4. Se `cached: false` → progress bar con label da `stageLabel()` (`src/lib/format.ts`), polling `get-job-status` ogni **3 secondi** con `{ jobId }`.
+5. Stime UX: toast *"2–4 minutes"*; durata reale dipende da LinkdAPI rate limit (batch da 25 + pausa 61s tra batch in stage1/2).
+
+URL utili:
+- `/?searchId=<uuid>` — ricarica risultati da history ("View Results")
+- `/?prompt=<testo>` — pre-compila textarea ("Re-run")
+
+### Fase A — `start-search` (ingresso)
+
+File: `supabase/functions/start-search/index.ts`
+
+| Step | Azione |
+|---|---|
+| 1 | Verifica JWT custom (`AUTH_JWT_SECRET`) |
+| 2 | `resolveAccess(email, …, "scout")` + `canUseScout()` — altrimenti 401 |
+| 3 | Valida `icpPrompt` non vuoto |
+| 4 | `INSERT searches` (`user_id` = email dal JWT, **non** dal body) |
+| 5 | `deduct_search_credits(email, 100, searchId)` — se fallisce, **DELETE** la riga `searches` |
+| 6 | Insufficiente → **402** `{ error: "insufficient_credits", balance, required: 100 }` |
+| 7 | `getCachedResults(supabase, icpPrompt)` — hash su ICP normalizzato (lowercase, punteggiatura rimossa, parole ordinate) |
+| 8a Cache hit | Copia righe in `search_results`, risposta `{ cached: true, results, searchId }` |
+| 8b Cache miss | `INSERT search_jobs` (`status: pending`, `current_stage: queued`), risposta `{ cached: false, jobId, searchId }` |
+
+> Il frontend invia ancora `userEmail` nel body ma il backend **ignora** il campo — usa solo il JWT.
+
+### Fase B — Orchestrazione job (NON è più una catena fire-and-forget)
+
+**Architettura attuale** (diversa dalla v2 originale):
+
+- Ogni invocazione di `process-search-job` esegue **un solo stage** e termina.
+- Imposta `next_stage` sul job per lo stage successivo.
+- Chiama `process-pending-jobs` in background (`EdgeRuntime.waitUntil`) per far partire il prossimo stage.
+- `process-pending-jobs` (cron **ogni minuto** + trigger post-stage):
+  - Lancia job `pending` con stage `"start"` (max 3).
+  - Per job `running` con `next_stage` valorizzato: **lock ottimistico** (`UPDATE next_stage = null WHERE id AND next_stage = ?`) poi lancia quel stage (max 5).
+  - `launchJob` usa `AbortController` a **1500 ms** — non aspetta la fine dello stage (evita timeout del cron).
+
+File: `supabase/functions/process-search-job/index.ts`, `process-pending-jobs/index.ts`
+
+| Stage | `current_stage` (UI) | Progress | Chiamate | Output su DB |
+|---|---|---|---|---|
+| `start` | `parsing` → `search` | 5 → 10 | `parse-icp` | `parsed_filters` sul job |
+| `search` | `searching` | 15 → 40 | `stage1-search` | righe `search_results` |
+| `enrich` | `enriching` | 50 → 70 | `stage2-enrich` | `bio`, `recent_posts` |
+| `score` | `scoring` | 80 → 90 | `score-profiles` | `match_score`, `match_reason`, `best_context` |
+| `finalize` | `completed` | 100 | `setCachedResults` | `search_cache` + job `completed` |
+
+`icp_prompt` viene letto dalla join `searches` sul job — lo **stesso testo originale** va a `score-profiles`, non solo i filtri parsati.
+
+### Fase C — `parse-icp` (testo → filtri LinkdAPI)
+
+File: `supabase/functions/parse-icp/index.ts`
+
+- Input: `{ prompt: string }` (ICP in linguaggio naturale).
+- Modello: `claude-sonnet-4-6`, `max_tokens: 500`.
+- Output JSON (solo raw JSON, no markdown):
+
+| Campo | Tipo | Uso downstream |
+|---|---|---|
+| `keyword` | string | `searchProfiles` → param LinkdAPI `keyword` |
+| `title` | string | `searchProfiles` + filtro headline in stage1 |
+| `geoUrns` | string[] | `searchProfiles` → `geoUrn` (mapping paesi nel system prompt) |
+| `language` | string | `searchProfiles` → `profileLanguage` |
+| `maxFollowers` | number \| null | Filtro stage1 su `followerCount` |
+| `behavioralCriteria` | string[] | **Parsato ma non usato in stage1** — influenza solo lo scoring via `icpPrompt` originale in stage score |
+
+Mapping geo nel prompt Claude (es.): USA `103644278`, UK `101165590`, IT `103350119`, …
+
+> **Punto di miglioramento (branch ICP):** `behavioralCriteria` e `industry` (supportato in `SearchFilters` / LinkdAPI ma non emesso da parse-icp) sono candidati per filtri più stretti in stage1 o prompt di scoring dedicati.
+
+### Fase D — `stage1-search` (filtro grossolano LinkdAPI)
+
+File: `supabase/functions/stage1-search/index.ts`
+
+1. `getLeadProvider().searchProfiles({ …filters, count: 50 })` — **50 profili** dalla search API (non 100).
+2. Per ogni profilo: estrae `username` da `url.split("/in/")[1]`, chiama `getProfileOverview(username)`.
+3. Rate limit: batch **25** in parallelo, poi `sleep(61000)` ms tra batch.
+4. Filtri applicati in codice:
+   - `followerCount > maxFollowers` → scarta (se `maxFollowers` definito).
+   - `headline` deve contenere `title` (case-insensitive), se `title` non vuoto.
+5. `slice(0, 50)` candidati → `INSERT search_results` con `match_score = null`.
+
+LinkdAPI (`_shared/lead-providers/linkdapi.ts`):
+- `GET /api/v1/search/people` → `data.people`
+- `GET /api/v1/profile/overview?username=...`
+- Header: `x-linkdapi-apikey`
+
+### Fase E — `stage2-enrich` (bio + post)
+
+File: `supabase/functions/stage2-enrich/index.ts`
+
+1. `SELECT` candidati con `bio IS NULL` per `search_id`.
+2. Per ciascuno in parallelo (batch 25 + pausa 61s):
+   - `getProfileDetails(urn)` → `bio` da `data.about`
+   - `getRecentPosts(urn)` → `data.posts` (`.catch(() => [])` se fallisce)
+3. `UPDATE search_results` — profili inaccessibili restano `bio = null` (non bloccano il batch).
+
+### Fase F — `score-profiles` (match AI sul ICP completo)
+
+File: `supabase/functions/score-profiles/index.ts`
+
+- Input: `{ searchId, icpPrompt }` — **`icpPrompt` è il testo originale dell'utente**, non il JSON di parse-icp.
+- Carica tutti i `search_results` del search; per Claude prepara:
+  - headline, location, follower_count, bio
+  - ultimi **3 post**, testo troncato a **300** caratteri
+- Modello: `claude-sonnet-4-6`, **`max_tokens: 8000`**.
+- System: analista B2B — score 0–100, `match_reason`, `best_context` (hook outreach).
+- Parsing robusto: rimuove markdown; se JSON troncato, recupera ultimo oggetto completo nell'array.
+- `UPDATE` per `index` → `match_score`, `match_reason`, `best_context`.
+- Risultati finali ordinati per `match_score` DESC (in `get-job-status` e cache).
+
+> Qui entrano in gioco segnali comportamentali ("bootstrapped", "does outreach alone") anche se stage1 non li filtra — Claude legge bio/post contro l'ICP intero.
+
+### Fase G — Cache
+
+File: `_shared/lead-providers/cache.ts`
+
+- **Lettura** (`start-search`): stesso ICP normalizzato → hit se `expires_at > now`.
+- **Scrittura** (`finalize`): upsert su `icp_hash` con TTL **7 giorni**.
+- Anche i hit cached creano una riga in `searches` + risultati in `search_results` (visibili in history).
+
+### Riepilogo: dove vive ogni informazione dell'ICP
+
+| Informazione ICP | parse-icp | stage1 LinkdAPI | stage2 | score-profiles |
+|---|---|---|---|---|
+| Settore / keyword | `keyword` | ✅ search API | — | ✅ (testo ICP + bio/post) |
+| Ruolo / title | `title` | ✅ API + filtro headline | — | ✅ |
+| Paese | `geoUrns` | ✅ geoUrn | — | ✅ |
+| Lingua profilo | `language` | ✅ profileLanguage | — | — |
+| Max follower | `maxFollowers` | ✅ filtro numerico | — | ✅ |
+| Segnali comportamentali | `behavioralCriteria` | ❌ non usato | — | ✅ via `icpPrompt` |
+| Testo libero / contesto | (tutto il prompt) | — | — | ✅ |
 
 ---
 
@@ -191,189 +404,75 @@ CREATE POLICY "Users see results of own searches" ON search_results
 
 Struttura: `supabase/functions/_shared/lead-providers/`
 
-**`types.ts`** — interfaccia astratta:
-```typescript
-export interface SearchFilters {
-  keyword?: string;
-  title?: string;
-  geoUrns?: string[];
-  industry?: string[];
-  language?: string;
-  count?: number;
-}
+**`types.ts`** — `LeadDataProvider`, `SearchFilters`, `ProfileBasic`, ecc.
 
-export interface ProfileBasic {
-  urn: string;
-  url: string;
-  fullName: string;
-  headline: string;
-  location: string;
-}
+**`linkdapi.ts`** — implementazione:
+- Auth: `x-linkdapi-apikey`
+- `searchProfiles` → `GET /api/v1/search/people`
+- `getProfileOverview` → `GET /api/v1/profile/overview?username=...`
+- `getProfileDetails` → `GET /api/v1/profile/details?urn=...`
+- `getRecentPosts` → `GET /api/v1/posts/all?urn=...`
+- Unwrap: `response.json().data`
 
-export interface ProfileOverview {
-  urn: string;
-  followerCount: number;
-}
+**`index.ts`** — factory `getLeadProvider()` da `LINKDAPI_KEY`
 
-export interface ProfileDetails {
-  urn: string;
-  bio: string;
-  positions: Array<{ jobTitle: string; company: string; duration: string }>;
-}
-
-export interface Post {
-  text: string;
-  postedAt: string; // stringa relativa: "7h", "3d", "1mo"
-  url?: string;
-}
-
-export interface LeadDataProvider {
-  searchProfiles(filters: SearchFilters): Promise<ProfileBasic[]>;
-  getProfileOverview(username: string): Promise<ProfileOverview>; // usa username, NON urn
-  getProfileDetails(urn: string): Promise<ProfileDetails>;
-  getRecentPosts(urn: string): Promise<Post[]>;
-}
-```
-
-**`linkdapi.ts`** — implementazione concreta:
-- Header auth: `x-linkdapi-apikey` (NON `x-api-key`)
-- `searchProfiles` → `GET /api/v1/search/people` — risposta in `data.people`
-- `getProfileOverview` → `GET /api/v1/profile/overview?username=...` — risposta root di `data`
-- `getProfileDetails` → `GET /api/v1/profile/details?urn=...` — bio in `data.about`
-- `getRecentPosts` → `GET /api/v1/posts/all?urn=...` — risposta in `data.posts`
-- Tutti i metodi unwrappano `response.json().data` tramite `#request<T>`
-
-**`index.ts`** — factory:
-```typescript
-export function getLeadProvider(): LeadDataProvider {
-  const apiKey = Deno.env.get("LINKDAPI_KEY");
-  if (!apiKey) throw new Error("Missing LINKDAPI_KEY");
-  return new LinkdAPIProvider(apiKey);
-}
-```
-
-**`cache.ts`** — caching layer:
-```typescript
-export function normalizeICP(prompt: string): string {
-  return prompt.toLowerCase().replace(/[^\w\s]/g, "").split(/\s+/).sort().join(" ");
-}
-
-export async function hashICP(prompt: string): Promise<string> { ... }
-
-export async function getCachedResults(supabase, icpPrompt) { ... }
-
-export async function setCachedResults(supabase, icpPrompt, results) {
-  // TTL: 7 giorni
-  expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-}
-```
+**`cache.ts`** — `normalizeICP`, `hashICP`, `getCachedResults`, `setCachedResults` (7 giorni)
 
 ---
 
-## FASE 3 — ICP Parser
+## FASE 3 — Access control condiviso
 
-Edge Function `parse-icp`:
-- Riceve `{ prompt: string }`
-- Chiama Claude con `model: "claude-sonnet-4-6"`, `max_tokens: 500`
-- Header Claude: `x-api-key` + `anthropic-version: "2023-06-01"`
-- Restituisce filtri strutturati: `{ keyword, title, geoUrns[], language, maxFollowers, behavioralCriteria[] }`
+File: `supabase/functions/_shared/access.ts`
 
----
+| Piano | Prodotti |
+|---|---|
+| `assistant` | solo Assistant |
+| `scout` | Scout |
+| `bundle` | Assistant + Scout |
 
-## FASE 4 — Stadio 1: Filtro grossolano
+Flusso `resolveAccess(email, …, requiredProduct?)`:
+1. `user_subscriptions` attiva → `premium` + `plan`
+2. Altrimenti `utenti_waitlist` → `waitlist_trial` (7 giorni da `created_at`)
+3. Altrimenti `unauthorized` / scaduto
 
-Edge Function `stage1-search`:
-- Riceve `{ searchId, filters }`
-- `searchProfiles(filters, 100)` → 100 profili
-- Per ognuno: `getProfileOverview(username)` — username estratto da `profile.url.split("/in/")[1]`
-- Rate limiting: batch da 25 con `sleep(61000)` tra batch
-- Filtra: `followerCount > maxFollowers` → scarta; headline non contiene title → scarta
-- Max 50 sopravvissuti
-- INSERT in `search_results` con `match_score = null`
+`canUseScout(result)` → `true` se `waitlist_trial` **oppure** `premium` con piano che include `scout`.
 
----
-
-## FASE 5 — Stadio 2: Enrichment profondo
-
-Edge Function `stage2-enrich`:
-- Riceve `{ searchId }`
-- Legge candidati con `bio = null` da `search_results`
-- Per ognuno: `getProfileDetails(urn)` + `getRecentPosts(urn).catch(() => [])`
-- UPDATE `search_results` con `bio` e `recent_posts`
-- Rate limiting: batch da 25 con `sleep(61000)`
+Usato da: `start-search`, `get-searches`, `get-job-status`, `delete-search`.  
+`get-credits` usa `resolveAccess` solo per esporre `plan` / `access`.
 
 ---
 
-## FASE 6 — Stadio 3: AI Scoring
+## FASE 4 — Edge Functions API (riepilogo)
 
-Edge Function `score-profiles`:
-- Riceve `{ searchId, icpPrompt }`
-- Legge candidati da `search_results`
-- Costruisce batch con bio + ultimi 3 post troncati a 300 char
-- Chiama Claude: `model: "claude-sonnet-4-6"`, **`max_tokens: 8000`**
-- Parsing robusto con fallback su JSON troncato
-- UPDATE `search_results` con `match_score`, `match_reason`, `best_context`
+| Function | Auth JWT | Access Scout | Note |
+|---|---|---|---|
+| `start-search` | ✅ | ✅ | Crediti + cache + crea job |
+| `get-job-status` | ✅ | ✅ | Poll `{ jobId }` o load `{ searchId }` |
+| `get-searches` | ✅ | ✅ | History |
+| `delete-search` | ✅ | ✅ | Cascata results → jobs → searches |
+| `get-credits` | ✅ | — | Saldo + piano |
+| `parse-icp` | service (interno) | — | Solo da `process-search-job` |
+| `stage1-search` | service | — | |
+| `stage2-enrich` | service | — | |
+| `score-profiles` | service | — | |
+| `process-search-job` | service | — | Un stage per call |
+| `process-pending-jobs` | service / cron | — | Dispatcher |
+| `test-linkdapi` | — | — | Debug |
 
----
+### `get-job-status` — due modalità
 
-## FASE 7 — Job Queue + Caching
+1. **Polling**: `{ jobId }` → stato job; se `completed`, include `results` ordinati per score.
+2. **History view**: `{ searchId }` senza `jobId` → risultati + `icp_prompt` (verifica `user_id === email` JWT).
 
-### Edge Function `start-search`
-- Riceve `{ icpPrompt, userEmail }`
-- Controlla cache → se hit: **salva comunque in `searches`** poi restituisce `{ cached: true, results, searchId }`
-- Se miss: INSERT in `searches` + `search_jobs` → restituisce `{ cached: false, jobId, searchId }`
+### Setup pg_cron
 
-### Edge Function `process-search-job` ⚠️ ARCHITETTURA CHAIN
-**Non usa `await` in sequenza** — ogni stage chiama il successivo in fire-and-forget per evitare il timeout di 150s di Supabase.
-
-Accetta `{ jobId, stage }` dove stage = `"start"` | `"search"` | `"enrich"` | `"score"` | `"finalize"`:
-
-```
-start → parse-icp → updateJob → fireNextStage("search", { filters })
-search → stage1-search → updateJob → fireNextStage("enrich")
-enrich → stage2-enrich → updateJob → fireNextStage("score")
-score → score-profiles → updateJob → fireNextStage("finalize")
-finalize → setCachedResults → updateJob(completed)
-```
-
-`fireNextStage` è fire-and-forget (NO await):
-```typescript
-function fireNextStage(jobId, nextStage, extras = {}) {
-  fetch(`${SUPABASE_URL}/functions/v1/process-search-job`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${SERVICE_KEY}` },
-    body: JSON.stringify({ jobId, stage: nextStage, ...extras }),
-  }); // NO await
-}
-```
-
-### Edge Function `process-pending-jobs`
-- Cron ogni minuto via `pg_cron`
-- Prende il primo job `status = "pending"` ordinato per `created_at`
-- Chiama `process-search-job` con `{ jobId, stage: "start" }` in fire-and-forget
-
-### Edge Function `get-job-status`
-Supporta due modalità:
-1. **Polling per jobId**: `{ jobId }` → status del job, se completed include `results`
-2. **Load per searchId**: `{ searchId }` (senza jobId) → carica direttamente i risultati da `search_results` + `icp_prompt` da `searches`
-
-### Edge Function `get-searches`
-- Verifica JWT custom con `AUTH_JWT_SECRET`
-- Usa SERVICE_ROLE_KEY per bypassare RLS
-- Restituisce `searches` con join `search_results(match_score)` per l'utente
-
-### Edge Function `delete-search`
-- Verifica JWT custom
-- Cancella in ordine: `search_results` → `search_jobs` → `searches`
-
-### Setup pg_cron:
 ```sql
 SELECT cron.schedule(
   'process-pending-jobs',
   '* * * * *',
   $$ SELECT net.http_post(
     url := 'https://YOUR_PROJECT.supabase.co/functions/v1/process-pending-jobs',
-    headers := '{"Authorization": "Bearer YOUR_ANON_KEY", "Content-Type": "application/json"}'::jsonb,
+    headers := '{"Authorization": "Bearer YOUR_SERVICE_OR_ANON_KEY", "Content-Type": "application/json"}'::jsonb,
     body := '{}'::jsonb
   ); $$
 );
@@ -381,68 +480,70 @@ SELECT cron.schedule(
 
 ---
 
-## FASE 8 — Frontend: Auth
+## FASE 5 — Frontend
 
-Sistema auth identico a Linky Assistant:
-- `src/lib/auth.ts` — `AuthState`, `saveAuth`/`getStoredAuth`/`clearAuth`, `requestOtp`, `verifyOtp`
-- `src/lib/auth-context.tsx` — `AuthProvider` + `useAuth()` con `user`, `isLoading`, `login`, `logout`
-- `src/app/login/page.tsx` — 3 stati: email → OTP → expired
-- `src/proxy.ts` — pass-through (protezione client-side) ⚠️ si chiama `proxy.ts` non `middleware.ts` (deprecato in Next.js 16)
-- `src/app/(protected)/layout.tsx` — route guard con redirect a `/login`
+### Auth
 
-JWT viene salvato in `localStorage`. Chiamate alle Edge Functions usano `Authorization: Bearer ${user.jwt}`.
-
----
-
-## FASE 9 — Frontend: Pagine
-
-### Layout generale
-- Sidebar fissa sinistra 260px con dark/light mode
-- Font: Sora (titoli) + DM Sans (body)
-- Colore brand: `#6d47f5`
-- Dark mode implementato con `next-themes`, classe `dark` su `<html>`
+- `src/lib/auth.ts` — `AuthState` con `plan?`, `saveAuth` / `getStoredAuth`, OTP
+- `src/lib/auth-context.tsx` — `AuthProvider`, `useAuth`
+- `/login` — email → OTP 6 cifre → stati scaduto waitlist/premium
+- `/auth?token=<JWT>` — magic link post-checkout → `login()` → `/`
+- JWT in `localStorage` (`linkyscout.auth`)
+- `(protected)/layout.tsx`: no user → `/login`; `plan === "assistant"` → `/upgrade`
 
 ### Pagine
-- `/` — New Search: textarea ICP, chip prompt esempio, progress bar con stage, tabella risultati con sheet dettaglio
-- `/history` — Search History: lista ricerche con "View Results", "Re-run", "Delete"
-- `/leads` — Saved Leads: tabella `profili_salvati` condivisa con Linky Assistant, badge "Scout"/"Extension"
-- `/settings` — Settings: info account, toggle tema, logout
 
-### Componenti riutilizzabili
-- `sidebar.tsx`
-- `search-results-table.tsx` — include icona ExternalLink per aprire profilo LinkedIn
-- `lead-detail-sheet.tsx`
-- `score-badge.tsx` — verde ≥80, giallo 60-79, grigio <60
-- `theme-toggle.tsx`
+| Route | Descrizione |
+|---|---|
+| `/` | New Search — ICP, progress, risultati, dialog crediti |
+| `/history` | Lista ricerche, View Results, Re-run, Delete |
+| `/leads` | `profili_salvati` — badge Scout/Extension, client Supabase |
+| `/settings` | Account, piano, crediti, tema, logout |
+| `/upgrade` | Utenti piano Assistant — CTA pricing |
+| `/login`, `/auth` | Pubbliche |
 
-### Fix importanti implementati
-- `formatRelativeDate` normalizza timestamp Supabase aggiungendo `Z` per forzare UTC
-- Le query Supabase lato client NON funzionano con RLS custom JWT → usare sempre Edge Functions con SERVICE_ROLE_KEY
-- CORS headers in tutte le Edge Functions chiamate dal frontend
+### Layout protetto
+
+- Sidebar 260px, brand `#6d47f5`, dark mode (`next-themes`, `linkyscout.theme`)
+- Header: `CreditBalance` → `/settings#credits`
+- `CreditsProvider` + `useCredits()` → `get-credits`
+
+### Componenti
+
+- `sidebar.tsx`, `search-results-table.tsx`, `lead-detail-sheet.tsx`, `score-badge.tsx` (verde ≥80, giallo 60–79, grigio &lt;60)
+- `theme-toggle.tsx`, `buy-credits-modal.tsx`, `insufficient-credits-dialog.tsx`, `credit-packs.tsx`
+- `formatRelativeDate` — appende `Z` ai timestamp Supabase per UTC
+
+### Salvataggio lead
+
+`src/lib/leads.ts` → `profili_salvati` con `source: "scout"`, aggiorna `saved_to_crm` su `search_results`.
 
 ---
 
-## FASE 10 — Deploy & Testing
+## FASE 6 — Deploy & Testing
 
-**Secrets Supabase** (Project Settings → Edge Functions):
+### Secrets Supabase (Edge Functions)
+
 ```
-SUPABASE_URL              (auto)
-SUPABASE_SERVICE_ROLE_KEY (auto)
-CLAUDE_API_KEY            (stesso di Linky Assistant)
-LINKDAPI_KEY              (da LinkdAPI dashboard)
-AUTH_JWT_SECRET           (stesso di Linky Assistant)
-RESEND_API_KEY            (stesso di Linky Assistant)
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+CLAUDE_API_KEY
+LINKDAPI_KEY
+AUTH_JWT_SECRET
 ```
 
-**JWT Verification** — disabilitare per tutte queste functions:
-- `start-search`, `get-job-status`, `process-search-job`, `process-pending-jobs`
-- `parse-icp`, `stage1-search`, `stage2-enrich`, `score-profiles`
-- `get-searches`, `delete-search`, `test-linkdapi`
+(+ `RESEND_API_KEY` solo per OTP su Linky Assistant)
 
-**Lasciare JWT ON:**
-- `request-otp`, `verify-otp` e tutte le Edge Functions di Linky Assistant
+### JWT Verification — disabilitare per
 
-**Deploy commands:**
+`start-search`, `get-job-status`, `process-search-job`, `process-pending-jobs`, `parse-icp`, `stage1-search`, `stage2-enrich`, `score-profiles`, `get-searches`, `delete-search`, `get-credits`, `test-linkdapi`
+
+### JWT Verification — lasciare ON
+
+`request-otp`, `verify-otp` (Linky Assistant)
+
+### Deploy
+
 ```powershell
 supabase functions deploy parse-icp
 supabase functions deploy stage1-search
@@ -454,31 +555,60 @@ supabase functions deploy process-pending-jobs
 supabase functions deploy get-job-status
 supabase functions deploy get-searches
 supabase functions deploy delete-search
+supabase functions deploy get-credits
 ```
 
-**Test end-to-end:**
-1. Login con email esistente in `utenti_waitlist`
-2. Nuova ricerca → verifica progress bar stages
-3. Attendi completamento (2-4 minuti)
-4. Verifica risultati con score e match reason
-5. Salva un lead → verifica in `/leads` e in `profili_salvati` su Supabase
-6. Vai in `/history` → verifica ricerca salvata
-7. Click "View Results" → verifica caricamento risultati
-8. Ripeti stessa ricerca → verifica `cached: true` istantaneo
-9. Verifica dark mode toggle
+### Test end-to-end
+
+1. Login con piano **scout** o **bundle** (o trial waitlist attivo).
+2. Utente **assistant** → redirect `/upgrade`.
+3. Saldo crediti in header ≥ 100.
+4. Nuova ricerca ICP → progress: parsing → searching → enriching → scoring → done (2–4 min).
+5. Risultati con score, `match_reason`, `best_context`; apri sheet dettaglio.
+6. Salva lead → `/leads` + `profili_salvati` con `source = scout`.
+7. `/history` → View Results (`?searchId=`), Re-run (`?prompt=`), Delete.
+8. Stesso ICP → risposta cached rapida; crediti comunque -100.
+9. Crediti insufficienti → dialog 402.
+10. Magic link `/auth?token=...` dopo acquisto.
+11. Dark mode toggle.
+
+### Test pipeline ICP (debug)
+
+- `supabase functions invoke test-linkdapi` — connettività API.
+- Log Edge Functions per stage fallito (`search_jobs.error_message`, `status = failed`).
+- Verificare `parsed_filters` sul job dopo stage `start`.
+- Confrontare conteggio `search_results` dopo stage1 vs profili con `bio` popolato dopo stage2.
 
 ---
 
-## Note architetturali importanti
+## Note architetturali
 
-### Perché le Edge Functions hanno timeout
-Supabase Edge Functions hanno un limite di **150 secondi** per invocazione. La pipeline completa richiede 3-4 minuti. Per questo `process-search-job` è implementato come **catena di stage indipendenti** — ogni stage chiama il successivo in fire-and-forget senza aspettare.
+### Timeout Edge Functions (150s)
 
-### Perché non usare il client Supabase lato frontend
-Il JWT di Linky Scout è un JWT **custom** firmato con `AUTH_JWT_SECRET`, non un JWT Supabase nativo. Il client Supabase browser non sa come interpretarlo per la RLS. Tutte le query sui dati utente passano per Edge Functions che usano `SERVICE_ROLE_KEY` e verificano il JWT manualmente.
+La pipeline completa supera un singolo timeout. **Soluzione:** uno stage per invocazione + `process-pending-jobs` che rilancia il job; il cron è safety net se `waitUntil` non parte.
+
+### JWT custom vs Supabase client
+
+Il JWT Scout non è un JWT Supabase nativo. Query su `searches` / `search_jobs` / `search_results` → Edge Functions + `SERVICE_ROLE_KEY` + verifica HMAC manuale.
 
 ### Astrazione LinkdAPI
-Tutto il codice che chiama LinkdAPI è isolato in `_shared/lead-providers/linkdapi.ts`. Se LinkdAPI chiude, si implementa un nuovo provider che rispetta l'interfaccia `LeadDataProvider` in `types.ts` e si cambia una riga in `index.ts`.
+
+Sostituire provider = nuova classe che implementa `LeadDataProvider` + una riga in `index.ts`.
 
 ### Caching 7 giorni
-Ricerche con lo stesso ICP (dopo normalizzazione) condividono la cache. Il TTL di 7 giorni bilancia freschezza dei dati e risparmio API. Anche le ricerche cached vengono salvate in `searches` per la history.
+
+ICP normalizzato (ordine parole, no punteggiatura) → stesso hash. Bilancia costo API e freschezza; ogni run utente resta in history.
+
+### Branch `Miglioramento_Ricerca` — idee di miglioramento ICP
+
+Aree naturali senza cambiare il contratto frontend:
+
+1. **stage1** — usare `behavioralCriteria` / `industry` nei filtri o in pre-scoring leggero.
+2. **parse-icp** — arricchire geo/industry; validazione schema; fallback se Claude non restituisce JSON.
+3. **stage1** — `count` dinamico o paginazione se pochi profili passano i filtri.
+4. **score-profiles** — batching se &gt; N profili; prompt che pesa esplicitamente `behavioralCriteria`.
+5. **Rate limit** — parallelismo / backoff configurabile per piano o crediti.
+
+---
+
+*Documento allineato al branch `Miglioramento_Ricerca` e al codice in `supabase/functions/` + `src/`.*
