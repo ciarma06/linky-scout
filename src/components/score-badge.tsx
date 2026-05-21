@@ -1,3 +1,5 @@
+//components/score-badge.tsx
+
 import { cn } from "@/lib/utils";
 
 interface ScoreBadgeProps {

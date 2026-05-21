@@ -3,18 +3,40 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { getLeadProvider } from "../_shared/lead-providers/index.ts";
+import type { ProfileBasic, SearchFilters } from "../_shared/lead-providers/types.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const BATCH_SIZE = 25;
 const BATCH_PAUSE_MS = 61_000;
-const TARGET_CANDIDATES = 40;
+const SEARCH_COUNT = 50;        // profili richiesti a search/people
+const TARGET_CANDIDATES = 40;   // candidati massimi inseriti in DB
+const PREFILTER_FLOOR = 15;     // sotto questa soglia disabilitiamo il pre-filtro
 
+// Token che, se presenti nella headline normalizzata, indicano profili
+// fuori target B2B (nonprofit, charity, religioso, community work).
+// Conservativa per evitare falsi negativi.
+const HEADLINE_BLACKLIST = [
+  "nonprofit",
+  "non profit",
+  "ministry",
+  "ministries",
+  "charity",
+  "church",
+  "religious",
+  "youth outreach",
+  "community outreach",
+  "outreach worker",
+  "outreach coordinator",
+  "outreach ministries",
+];
+
+// Normalizza una stringa per matching case-insensitive senza accenti/punteggiatura.
 const normalize = (s: string) =>
   s.toLowerCase()
     .normalize("NFD")
@@ -23,6 +45,8 @@ const normalize = (s: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+// Matcher AND-tollerante: tutti i token del title devono essere presenti
+// nella headline. Token <= 2 caratteri vengono ignorati.
 const headlineMatchesTitle = (headline: string, title: string): boolean => {
   if (!title?.trim()) return true;
   if (!headline) return false;
@@ -32,132 +56,144 @@ const headlineMatchesTitle = (headline: string, title: string): boolean => {
   return tokens.every((t) => h.includes(t));
 };
 
-Deno.serve(async (req) => {
-  try {
-    const body = await req.json().catch(() => null);
+// Matcher OR: basta UN token blacklisted per scartare il profilo.
+const headlineIsBlacklisted = (headline: string): boolean => {
+  if (!headline) return false;
+  const h = normalize(headline);
+  return HEADLINE_BLACKLIST.some((bad) => h.includes(bad));
+};
 
-    if (!body?.filters) {
+Deno.serve(async (req) => {
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  try {
+    const body = await req.json().catch(() => ({}));
+    const { searchId, filters } = body as {
+      searchId?: string;
+      filters?: SearchFilters & { maxFollowers?: number | null };
+    };
+
+    if (!searchId || !filters) {
       return new Response(
-        JSON.stringify({ error: "Missing required field: filters" }),
+        JSON.stringify({ error: "Missing required fields: searchId and filters" }),
         { status: 400, headers: { "Content-Type": "application/json" } },
       );
     }
 
-    const { searchId, filters } = body as {
-      searchId: string;
-      filters: {
-        keyword?: string;
-        title?: string;
-        geoUrns?: string[];
-        industry?: string[];
-        language?: string;
-        maxFollowers?: number | null;
-        behavioralCriteria?: string[];
-      };
-    };
-
     const provider = getLeadProvider();
+    const { keyword, title, geoUrns, industry, language, maxFollowers } = filters;
 
-    const rawProfiles = await provider.searchProfiles({
-      keyword: filters.keyword,
-      title: filters.title,
-      geoUrns: filters.geoUrns,
-      industry: filters.industry,
-      language: filters.language,
-      count: 50,
+    // --- STEP 1: search/people grezza (1 credito) ---
+    const rawProfiles: ProfileBasic[] = await provider.searchProfiles({
+      keyword,
+      title,
+      geoUrns,
+      industry,
+      language,
+      count: SEARCH_COUNT,
     });
 
     console.log(`[stage1] search/people: ${rawProfiles.length} profili grezzi`);
 
-    const preFiltered = rawProfiles.filter((p) =>
-      headlineMatchesTitle(p.headline ?? "", filters.title ?? "")
+    // --- STEP 2: PRE-FILTRO headline (title match + blacklist) ---
+    const titleFiltered = rawProfiles.filter((p) =>
+      headlineMatchesTitle(p.headline ?? "", title ?? "")
     );
+    const preFiltered = titleFiltered.filter((p) =>
+      !headlineIsBlacklisted(p.headline ?? "")
+    );
+
+    const blacklisted = titleFiltered.length - preFiltered.length;
 
     console.log(
       `[stage1] post-filtro headline: ${preFiltered.length}/${rawProfiles.length} ` +
-        `(risparmio: ${(rawProfiles.length - preFiltered.length) * 2} crediti)`,
+      `(title match: ${titleFiltered.length}, blacklisted: ${blacklisted}, ` +
+      `risparmio: ${(rawProfiles.length - preFiltered.length) * 2} crediti)`,
     );
 
-    const toEnrich = preFiltered.length >= 15 ? preFiltered : rawProfiles;
+    // Fallback: se il pre-filtro è troppo aggressivo, usiamo i grezzi.
+    // Meglio rumore che zero risultati per ICP molto specifici.
+    const toEnrich = preFiltered.length >= PREFILTER_FLOOR
+      ? preFiltered
+      : rawProfiles;
 
-    const enriched: Array<{
-      urn: string;
-      url: string;
-      fullName: string;
-      headline: string;
-      location: string;
-      followerCount: number;
-    }> = [];
+    if (toEnrich.length < preFiltered.length) {
+      console.log(`[stage1] WARNING: pre-filtro disabilitato (sotto soglia ${PREFILTER_FLOOR})`);
+    }
+
+    // --- STEP 3: profile/overview SOLO sui survivors (2 crediti/cad) ---
+    const enriched: Array<ProfileBasic & { followerCount: number }> = [];
 
     for (let i = 0; i < toEnrich.length; i += BATCH_SIZE) {
       const batch = toEnrich.slice(i, i + BATCH_SIZE);
 
       const results = await Promise.all(
-        batch.map(async (profile) => {
+        batch.map(async (p) => {
           try {
-            const username =
-              profile.url.split("/in/")[1]?.replace(/\/$/, "") ?? "";
+            const username = p.url.split("/in/")[1]?.replace(/\/$/, "") ?? "";
             if (!username) return null;
-
             const overview = await provider.getProfileOverview(username);
             return {
-              urn: overview.urn ?? profile.urn,
-              url: profile.url,
-              fullName: profile.fullName,
-              headline: profile.headline,
-              location: profile.location,
+              ...p,
+              urn: overview.urn ?? p.urn,
               followerCount: overview.followerCount ?? 0,
             };
           } catch {
+            // Profilo non accessibile: lo saltiamo silenziosamente.
             return null;
           }
         }),
       );
 
-      enriched.push(...(results.filter(Boolean) as typeof enriched));
+      for (const r of results) {
+        if (r !== null) enriched.push(r);
+      }
 
       if (i + BATCH_SIZE < toEnrich.length) {
         await sleep(BATCH_PAUSE_MS);
       }
     }
 
+    // --- STEP 4: filtro hard sui followers (post-overview) ---
     const final = enriched
-      .filter((p) => {
-        if (
-          filters.maxFollowers !== null &&
-          filters.maxFollowers !== undefined
-        ) {
-          return p.followerCount <= filters.maxFollowers;
-        }
-        return true;
-      })
+      .filter((p) => !maxFollowers || p.followerCount <= maxFollowers)
       .slice(0, TARGET_CANDIDATES);
 
     console.log(`[stage1] candidati finali: ${final.length}`);
 
-    if (final.length > 0) {
-      const rows = final.map((p) => ({
-        search_id: searchId,
-        linkedin_urn: p.urn,
-        linkedin_url: p.url,
-        full_name: p.fullName,
-        headline: p.headline,
-        location: p.location,
-        follower_count: p.followerCount,
-        match_score: null,
-        saved_to_crm: false,
-      }));
+    // --- STEP 5: insert in search_results ---
+    const rows = final.map((p) => ({
+      search_id: searchId,
+      linkedin_urn: p.urn,
+      linkedin_url: p.url,
+      full_name: p.fullName,
+      headline: p.headline,
+      location: p.location,
+      follower_count: p.followerCount,
+      match_score: null,
+      saved_to_crm: false,
+    }));
 
-      const { error } = await supabase.from("search_results").insert(rows);
-      if (error) throw error;
+    if (rows.length > 0) {
+      const { error: insertError } = await supabase
+        .from("search_results")
+        .insert(rows);
+      if (insertError) {
+        throw new Error(`Failed to insert results: ${insertError.message}`);
+      }
     }
 
     return new Response(
       JSON.stringify({
-        totalFound: rawProfiles.length,
+        inserted: rows.length,
         prefiltered: preFiltered.length,
-        afterFilter: final.length,
-        inserted: final.length,
+        blacklisted,
+        searchId,
       }),
       { headers: { "Content-Type": "application/json" } },
     );

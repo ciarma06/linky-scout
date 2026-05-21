@@ -1,3 +1,5 @@
+//parse-icp/index.ts
+
 import "@supabase/functions-js/edge-runtime.d.ts";
 
 const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");

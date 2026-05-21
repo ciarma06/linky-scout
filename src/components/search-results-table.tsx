@@ -1,3 +1,5 @@
+//components/search-results-table.tsx
+
 "use client";
 
 import { useMemo, useState } from "react";

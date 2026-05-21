@@ -1,3 +1,5 @@
+//shared/lead-providers/types.ts
+
 /** Filters accepted by searchProfiles. All fields are optional. */
 export type SearchFilters = {
   keyword?: string;
