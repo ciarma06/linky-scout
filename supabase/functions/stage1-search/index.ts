@@ -12,31 +12,24 @@ const supabase = createClient(
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const BATCH_SIZE = 25;
+// Batch size 10: tier Hobby = 30 req/min. Stage1 fa 1 chiamata per profilo
+// (profile/overview), quindi 10 in burst = 10 req, ampio margine sotto i 30.
+const BATCH_SIZE = 10;
 const BATCH_PAUSE_MS = 61_000;
-const SEARCH_COUNT = 50;        // profili richiesti a search/people
-const TARGET_CANDIDATES = 40;   // candidati massimi inseriti in DB
-const PREFILTER_FLOOR = 15;     // sotto questa soglia disabilitiamo il pre-filtro
+const SEARCH_COUNT = 50;
+const TARGET_CANDIDATES = 40;
+const PREFILTER_FLOOR = 15;
 
-// Token che, se presenti nella headline normalizzata, indicano profili
-// fuori target B2B (nonprofit, charity, religioso, community work).
-// Conservativa per evitare falsi negativi.
+// Costo crediti LinkdAPI per chiamata
+const COST_SEARCH_PEOPLE = 1;
+const COST_PROFILE_OVERVIEW = 2;
+
 const HEADLINE_BLACKLIST = [
-  "nonprofit",
-  "non profit",
-  "ministry",
-  "ministries",
-  "charity",
-  "church",
-  "religious",
-  "youth outreach",
-  "community outreach",
-  "outreach worker",
-  "outreach coordinator",
-  "outreach ministries",
+  "nonprofit", "non profit", "ministry", "ministries", "charity",
+  "church", "religious", "youth outreach", "community outreach",
+  "outreach worker", "outreach coordinator", "outreach ministries",
 ];
 
-// Normalizza una stringa per matching case-insensitive senza accenti/punteggiatura.
 const normalize = (s: string) =>
   s.toLowerCase()
     .normalize("NFD")
@@ -45,8 +38,6 @@ const normalize = (s: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-// Matcher AND-tollerante: tutti i token del title devono essere presenti
-// nella headline. Token <= 2 caratteri vengono ignorati.
 const headlineMatchesTitle = (headline: string, title: string): boolean => {
   if (!title?.trim()) return true;
   if (!headline) return false;
@@ -56,7 +47,6 @@ const headlineMatchesTitle = (headline: string, title: string): boolean => {
   return tokens.every((t) => h.includes(t));
 };
 
-// Matcher OR: basta UN token blacklisted per scartare il profilo.
 const headlineIsBlacklisted = (headline: string): boolean => {
   if (!headline) return false;
   const h = normalize(headline);
@@ -88,19 +78,19 @@ Deno.serve(async (req) => {
     const provider = getLeadProvider();
     const { keyword, title, geoUrns, industry, language, maxFollowers } = filters;
 
-    // --- STEP 1: search/people grezza (1 credito) ---
+    // Counter crediti LinkdAPI
+    let creditsUsed = 0;
+    let overviewCalls = 0;
+
+    // STEP 1: search/people (1 credito)
     const rawProfiles: ProfileBasic[] = await provider.searchProfiles({
-      keyword,
-      title,
-      geoUrns,
-      industry,
-      language,
-      count: SEARCH_COUNT,
+      keyword, title, geoUrns, industry, language, count: SEARCH_COUNT,
     });
+    creditsUsed += COST_SEARCH_PEOPLE;
 
     console.log(`[stage1] search/people: ${rawProfiles.length} profili grezzi`);
 
-    // --- STEP 2: PRE-FILTRO headline (title match + blacklist) ---
+    // STEP 2: pre-filtro headline (title match + blacklist)
     const titleFiltered = rawProfiles.filter((p) =>
       headlineMatchesTitle(p.headline ?? "", title ?? "")
     );
@@ -113,11 +103,9 @@ Deno.serve(async (req) => {
     console.log(
       `[stage1] post-filtro headline: ${preFiltered.length}/${rawProfiles.length} ` +
       `(title match: ${titleFiltered.length}, blacklisted: ${blacklisted}, ` +
-      `risparmio: ${(rawProfiles.length - preFiltered.length) * 2} crediti)`,
+      `risparmio: ${(rawProfiles.length - preFiltered.length) * COST_PROFILE_OVERVIEW} crediti)`,
     );
 
-    // Fallback: se il pre-filtro è troppo aggressivo, usiamo i grezzi.
-    // Meglio rumore che zero risultati per ICP molto specifici.
     const toEnrich = preFiltered.length >= PREFILTER_FLOOR
       ? preFiltered
       : rawProfiles;
@@ -126,7 +114,7 @@ Deno.serve(async (req) => {
       console.log(`[stage1] WARNING: pre-filtro disabilitato (sotto soglia ${PREFILTER_FLOOR})`);
     }
 
-    // --- STEP 3: profile/overview SOLO sui survivors (2 crediti/cad) ---
+    // STEP 3: profile/overview SOLO sui survivors (2 crediti/cad)
     const enriched: Array<ProfileBasic & { followerCount: number }> = [];
 
     for (let i = 0; i < toEnrich.length; i += BATCH_SIZE) {
@@ -134,9 +122,10 @@ Deno.serve(async (req) => {
 
       const results = await Promise.all(
         batch.map(async (p) => {
+          const username = p.url.split("/in/")[1]?.replace(/\/$/, "") ?? "";
+          if (!username) return null;
+          overviewCalls += 1; // conta SEMPRE, anche errori (LinkdAPI consuma)
           try {
-            const username = p.url.split("/in/")[1]?.replace(/\/$/, "") ?? "";
-            if (!username) return null;
             const overview = await provider.getProfileOverview(username);
             return {
               ...p,
@@ -144,7 +133,6 @@ Deno.serve(async (req) => {
               followerCount: overview.followerCount ?? 0,
             };
           } catch {
-            // Profilo non accessibile: lo saltiamo silenziosamente.
             return null;
           }
         }),
@@ -159,14 +147,23 @@ Deno.serve(async (req) => {
       }
     }
 
-    // --- STEP 4: filtro hard sui followers (post-overview) ---
+    creditsUsed += overviewCalls * COST_PROFILE_OVERVIEW;
+
+    // STEP 4: filtro hard sui followers
     const final = enriched
       .filter((p) => !maxFollowers || p.followerCount <= maxFollowers)
       .slice(0, TARGET_CANDIDATES);
 
     console.log(`[stage1] candidati finali: ${final.length}`);
 
-    // --- STEP 5: insert in search_results ---
+    // LOG CREDITI LINKDAPI STAGE 1
+    console.log(
+      `[stage1] CREDITI LINKDAPI: ${creditsUsed} ` +
+      `(search/people: 1 × ${COST_SEARCH_PEOPLE} = ${COST_SEARCH_PEOPLE}, ` +
+      `profile/overview: ${overviewCalls} × ${COST_PROFILE_OVERVIEW} = ${overviewCalls * COST_PROFILE_OVERVIEW})`,
+    );
+
+    // STEP 5: insert in search_results
     const rows = final.map((p) => ({
       search_id: searchId,
       linkedin_urn: p.urn,
@@ -193,6 +190,7 @@ Deno.serve(async (req) => {
         inserted: rows.length,
         prefiltered: preFiltered.length,
         blacklisted,
+        creditsUsed,
         searchId,
       }),
       { headers: { "Content-Type": "application/json" } },

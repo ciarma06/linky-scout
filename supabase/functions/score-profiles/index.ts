@@ -14,74 +14,77 @@ const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 5000;
 const POST_TEXT_LIMIT = 250;
 const POSTS_PER_PROFILE = 3;
-
-// Soglia minima bio per considerare un profilo "scoreable".
-// Sotto i 50 caratteri la bio è di solito solo una tagline ripetitiva
-// dell'headline e non aggiunge segnale utile allo scoring.
 const MIN_BIO_LENGTH = 50;
+
+// Soglia minima di score sotto la quale i profili vengono ELIMINATI dal DB
+// (non solo nascosti). Cambia la cache e la history di conseguenza.
+const SCORE_THRESHOLD = 50;
 
 type ScoreItem = { i: number; s: number; r: string; c: string };
 
-const SYSTEM_PROMPT = `Sei un analista B2B senior specializzato in lead qualification per outreach LinkedIn.
+// Prompt interamente in inglese: forza Claude a rispondere SEMPRE in inglese
+// indipendentemente dalla lingua dell'ICP fornito dall'utente.
+const SYSTEM_PROMPT = `You are a senior B2B analyst specializing in LinkedIn lead qualification for cold outreach.
 
-Il tuo compito: assegnare a ogni profilo uno score 0-100 che indica quanto matcha l'ICP fornito.
+Your task: assign each profile a score from 0-100 indicating how well it matches the given ICP.
 
-# RUBRICA DI SCORING (segui sempre queste bande)
+# SCORING RUBRIC (always follow these bands)
 
-**90-100 — Match perfetto**
-- Headline, bio E post recenti confermano TUTTI i criteri dell'ICP (ruolo, settore, segnali comportamentali).
-- C'è prova esplicita nei contenuti (non solo inferenza dal titolo).
+**90-100 — Perfect match**
+- Headline, bio AND recent posts confirm ALL ICP criteria (role, industry, behavioral signals).
+- Explicit evidence in the content (not just inference from job title).
 
-**75-89 — Match forte**
-- Ruolo e settore confermati. Almeno UN segnale comportamentale presente.
-- Bio rilevante ma non tutti i criteri dell'ICP sono dimostrati.
+**75-89 — Strong match**
+- Role and industry confirmed. At least ONE behavioral signal present.
+- Bio is relevant but not all ICP criteria are demonstrated.
 
-**60-74 — Match plausibile ("forse buono")**
-- Ruolo corretto. Settore corretto o adiacente. Pochi segnali comportamentali.
-- Vale comunque la pena valutare per outreach, ma con messaggio generico.
+**60-74 — Plausible match ("maybe good")**
+- Correct role. Correct or adjacent industry. Few behavioral signals.
+- Worth evaluating for outreach, but with a generic message.
 
-**40-59 — Mismatch debole**
-- Ruolo o settore divergono dall'ICP. Match solo superficiale.
-- Outreach probabilmente inefficace.
+**40-59 — Weak mismatch**
+- Role or industry diverges from ICP. Only superficial match (e.g. keyword in headline).
+- Outreach likely ineffective.
 
-**0-39 — Mismatch chiaro**
-- Profilo fuori target (ruolo sbagliato, settore sbagliato, o profilo inattivo).
-- Non vale crediti per outreach.
+**0-39 — Clear mismatch**
+- Off-target profile (wrong role, wrong industry, or inactive profile).
+- Not worth credits for outreach.
 
-# PENALTY DETERMINISTICI (applica SEMPRE)
-- Headline generica senza ruolo specifico (es. "Founder", "CEO & Founder" senza azienda chiara): -10
-- Follower count incoerente con l'ICP (se specificato): -10
-- Lingua dei post diversa da quella dell'ICP: -5
+# DETERMINISTIC PENALTIES (always apply)
+- Generic headline without specific role (e.g. "Founder", "CEO & Founder" without clear company): -10
+- Follower count incoherent with ICP (if specified): -10
+- Post language different from ICP language: -5
 
-# ATTENZIONE — SETTORI FUORI ICP B2B
-Se la headline o la bio indicano uno di questi settori, lo score MASSIMO è 35:
+# OUT-OF-ICP B2B SECTORS
+If headline or bio indicate one of these sectors, the MAXIMUM score is 35:
 - Nonprofit, charity, ministry, religious organization
 - Community/youth outreach, social work, advocacy
-- Healthcare/medical practice (a meno che l'ICP non sia esplicitamente healthcare)
-- Influencer, lifestyle brand, content creator (a meno che l'ICP non sia esplicitamente creator economy)
+- Healthcare/medical practice (unless ICP is explicitly healthcare)
+- Influencer, lifestyle brand, content creator (unless ICP is explicitly creator economy)
 
-# REGOLE DI COMPORTAMENTO
-1. **In dubbio scendi**: se non sei sicuro tra 75 e 80, scrivi 73. Tra 60 e 65, scrivi 58. La banda alta richiede prove.
-2. **Non inventare**: se la bio non menziona qualcosa, non assumere che ci sia.
-3. **best_context (campo c)**: scrivi UN aggancio concreto per il primo messaggio outreach, citando un fatto specifico dal profilo (un post, una posizione, un risultato). Max 200 caratteri. Se non ci sono agganci concreti, stringa vuota.
-4. **match_reason (campo r)**: 1 frase, max 150 caratteri. Spiega il "perché" dello score citando il criterio chiave.
+# BEHAVIOR RULES
+1. **When in doubt, go down**: if unsure between 75 and 80, write 73. Between 60 and 65, write 58. The high band requires proof.
+2. **Don't invent**: if bio doesn't mention something, don't assume it's there.
+3. **best_context (field c)**: write ONE concrete hook for the first outreach message, citing a specific fact from the profile (a post, a position, a result). Max 200 characters. Empty string if no concrete hook.
+4. **match_reason (field r)**: 1 sentence, max 150 characters. Explain the "why" of the score citing the key criterion.
+5. **ALWAYS WRITE IN ENGLISH**: match_reason and best_context must be in English, regardless of the language of the ICP.
 
-# FORMATO OUTPUT
-Rispondi con SOLO un array JSON valido, nessun markdown, nessun testo prima/dopo.
-Schema per ogni elemento: { "i": number, "s": number, "r": string, "c": string }
-Dove "i" è l'indice del profilo nell'input (parte da 0).
+# OUTPUT FORMAT
+Respond with ONLY a valid JSON array, no markdown, no text before/after.
+Schema per element: { "i": number, "s": number, "r": string, "c": string }
+Where "i" is the profile index in the input (starts at 0).
 
-# ESEMPIO DI SCORING BORDERLINE
-ICP: "Founder di startup SaaS B2B che fa cold outreach su LinkedIn"
-Profilo: headline "Co-Founder @ TechCo | We build dev tools", bio "Building developer tools for European teams", post: "Hiring a designer".
+# BORDERLINE SCORING EXAMPLE
+ICP: "Founder of B2B SaaS startup doing cold outreach on LinkedIn"
+Profile: headline "Co-Founder @ TechCo | We build dev tools", bio "Building developer tools for European teams", post: "Hiring a designer".
 
-Output corretto: { "i": 0, "s": 67, "r": "Founder in tech B2B ma nessuna prova di SaaS o outreach diretto", "c": "" }
+Correct output: { "i": 0, "s": 67, "r": "Founder in B2B tech but no proof of SaaS or direct outreach", "c": "" }
 
-# ESEMPIO DI SETTORE FUORI ICP
-ICP: "Founder di startup SaaS B2B"
-Profilo: headline "Founder at Rising Star Outreach", bio "Nonprofit supporting children in need".
+# OUT-OF-ICP SECTOR EXAMPLE
+ICP: "Founder of B2B SaaS startup"
+Profile: headline "Founder at Rising Star Outreach", bio "Nonprofit supporting children in need".
 
-Output corretto: { "i": 0, "s": 18, "r": "Nonprofit charity, settore completamente fuori ICP B2B", "c": "" }`;
+Correct output: { "i": 0, "s": 18, "r": "Nonprofit charity, completely outside B2B ICP", "c": "" }`;
 
 function parseScoreResponse(text: string): ScoreItem[] {
   const cleaned = text.replace(/```json|```/g, "").trim();
@@ -91,25 +94,13 @@ function parseScoreResponse(text: string): ScoreItem[] {
     const matches = cleaned.match(/\{[^{}]*"i"\s*:\s*\d+[^{}]*\}/g) ?? [];
     return matches
       .map((m) => {
-        try {
-          return JSON.parse(m);
-        } catch {
-          return null;
-        }
+        try { return JSON.parse(m); } catch { return null; }
       })
       .filter(Boolean) as ScoreItem[];
   }
 }
 
-/**
- * Decide se un profilo ha dati sufficienti per essere scorato da Claude.
- * Richiede: bio significativa (>= MIN_BIO_LENGTH caratteri) OPPURE almeno un post.
- * Profili senza nulla finiscono con match_score = null e label "Dati insufficienti".
- */
-function isScoreable(p: {
-  bio: string | null;
-  recent_posts: unknown;
-}): boolean {
+function isScoreable(p: { bio: string | null; recent_posts: unknown }): boolean {
   const bioLength = (p.bio ?? "").trim().length;
   const postsCount = Array.isArray(p.recent_posts) ? p.recent_posts.length : 0;
   return bioLength >= MIN_BIO_LENGTH || postsCount >= 1;
@@ -132,9 +123,7 @@ Deno.serve(async (req) => {
 
     if (!searchId || !icpPrompt?.trim()) {
       return new Response(
-        JSON.stringify({
-          error: "Missing required fields: searchId and icpPrompt",
-        }),
+        JSON.stringify({ error: "Missing required fields: searchId and icpPrompt" }),
         { status: 400, headers: { "Content-Type": "application/json" } },
       );
     }
@@ -163,7 +152,8 @@ Deno.serve(async (req) => {
       );
     }
 
-    // --- ROUTING: separa profili scorabili da profili con dati insufficienti ---
+    // Routing: separa scorabili da non-scorabili. I non-scorabili saranno
+    // eliminati alla fine insieme ai profili con score basso.
     const scoreable = profiles.filter(isScoreable);
     const insufficient = profiles.filter((p) => !isScoreable(p));
 
@@ -171,40 +161,22 @@ Deno.serve(async (req) => {
       `[score] totale: ${profiles.length}, scorabili: ${scoreable.length}, dati insufficienti: ${insufficient.length}`,
     );
 
-    // --- Marca subito i profili senza dati con label fissa ---
-    // match_score resta NULL → il badge UI mostrerà "—".
-    // match_reason spiega all'utente perché non c'è score.
-    if (insufficient.length > 0) {
-      await Promise.all(
-        insufficient.map((p) =>
-          supabase
-            .from("search_results")
-            .update({
-              match_score: null,
-              match_reason: "Dati insufficienti: bio e post non disponibili",
-              best_context: "Apri il profilo LinkedIn per maggiori dettagli",
-            })
-            .eq("id", p.id)
-        ),
-      );
-    }
-
-    // Edge case: nessun profilo scorabile → esci senza chiamare Claude
+    // Edge case: nessun profilo scorabile
     if (scoreable.length === 0) {
+      // Elimina i profili insufficient e termina
+      const insufficientIds = insufficient.map((p) => p.id);
+      if (insufficientIds.length > 0) {
+        await supabase.from("search_results").delete().in("id", insufficientIds);
+      }
+      console.log(`[score] WARNING: nessun profilo scorabile, eliminati ${insufficientIds.length} insufficient`);
       return new Response(
-        JSON.stringify({
-          scored: 0,
-          insufficient: insufficient.length,
-          message: "No scoreable candidates",
-        }),
+        JSON.stringify({ scored: 0, deleted: insufficientIds.length }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
     type RecentPost = { text?: string; postedAt?: string; url?: string };
 
-    // L'indice `i` qui si riferisce alla posizione in `scoreable`, NON in `profiles`.
-    // Importante per il mapping inverso degli score.
     const profileInput = scoreable.map((p, i) => {
       const posts = (Array.isArray(p.recent_posts) ? p.recent_posts as RecentPost[] : [])
         .slice(0, POSTS_PER_PROFILE)
@@ -224,10 +196,10 @@ Deno.serve(async (req) => {
     const userMessage = `# ICP TARGET
 ${icpPrompt}
 
-# PROFILI DA VALUTARE (${profileInput.length})
+# PROFILES TO EVALUATE (${profileInput.length})
 ${JSON.stringify(profileInput)}
 
-Restituisci l'array JSON di scoring per tutti i ${profileInput.length} profili.`;
+Return the JSON scoring array for all ${profileInput.length} profiles. Remember: respond in English.`;
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -262,12 +234,11 @@ Restituisci l'array JSON di scoring per tutti i ${profileInput.length} profili.`
       throw new Error(`Failed to parse Claude response: ${rawText.substring(0, 200)}`);
     }
 
-    // --- Update batch: s.i è indice in `scoreable`, NON in `profiles` ---
+    // Update batch: l'indice s.i si riferisce a `scoreable`
     await Promise.all(
       scores.map(async (s) => {
         const profile = scoreable[s.i];
         if (!profile) return;
-
         await supabase
           .from("search_results")
           .update({
@@ -279,7 +250,32 @@ Restituisci l'array JSON di scoring per tutti i ${profileInput.length} profili.`
       }),
     );
 
+    // --- DELETE finale: rimuove insufficient + score sotto soglia ---
+    // Cosa elimina: profili con match_score IS NULL (non scorati = insufficient)
+    // OPPURE match_score < SCORE_THRESHOLD. La cache e la history conterranno
+    // solo i profili sopra soglia.
+    const { data: deleted, error: deleteError } = await supabase
+      .from("search_results")
+      .delete()
+      .eq("search_id", searchId)
+      .or(`match_score.is.null,match_score.lt.${SCORE_THRESHOLD}`)
+      .select("id");
+
+    if (deleteError) {
+      console.error(`[score] errore DELETE: ${deleteError.message}`);
+    }
+
+    const deletedCount = deleted?.length ?? 0;
+    const survivors = scores.filter((s) => s.s >= SCORE_THRESHOLD).length;
+
+    console.log(
+      `[score] eliminati ${deletedCount} profili (insufficient + score < ${SCORE_THRESHOLD}), ` +
+      `sopravvissuti ${survivors}/${scores.length} scorati`,
+    );
+
+    // topMatches calcolato sui sopravvissuti (>= 50)
     const topMatches = [...scores]
+      .filter((s) => s.s >= SCORE_THRESHOLD)
       .sort((a, b) => b.s - a.s)
       .slice(0, 3)
       .map((s) => ({
@@ -291,7 +287,8 @@ Restituisci l'array JSON di scoring per tutti i ${profileInput.length} profili.`
     return new Response(
       JSON.stringify({
         scored: scores.length,
-        insufficient: insufficient.length,
+        survivors,
+        deleted: deletedCount,
         searchId,
         topMatches,
       }),
