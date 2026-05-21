@@ -8,29 +8,84 @@ const supabase = createClient(
 
 const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
 
-type RecentPost = {
-  text?: string;
-  postedAt?: string;
-  url?: string;
-};
+const MODEL = "claude-sonnet-4-6";
+const MAX_TOKENS = 5000;
+const POST_TEXT_LIMIT = 250;
+const POSTS_PER_PROFILE = 3;
 
-type ProfileForClaude = {
-  index: number;
-  id: string;
-  fullName: string | null;
-  headline: string | null;
-  location: string | null;
-  followerCount: number | null;
-  bio: string;
-  recentPosts: Array<{ text: string | undefined; postedAt: string | undefined }>;
-};
+type ScoreItem = { i: number; s: number; r: string; c: string };
 
-type ClaudeScore = {
-  index: number;
-  match_score: number;
-  match_reason: string;
-  best_context: string;
-};
+const SYSTEM_PROMPT = `Sei un analista B2B senior specializzato in lead qualification per outreach LinkedIn.
+
+Il tuo compito: assegnare a ogni profilo uno score 0-100 che indica quanto matcha l'ICP fornito.
+
+# RUBRICA DI SCORING (segui sempre queste bande)
+
+**90-100 — Match perfetto**
+- Headline, bio E post recenti confermano TUTTI i criteri dell'ICP (ruolo, settore, segnali comportamentali).
+- C'è prova esplicita nei contenuti (non solo inferenza dal titolo).
+- Esempio: ICP cerca "founder SaaS bootstrapped che fa outreach diretto" e il profilo ha bio "Bootstrapped my SaaS to 1M ARR" + post recenti su outreach personale.
+
+**75-89 — Match forte**
+- Ruolo e settore confermati. Almeno UN segnale comportamentale presente.
+- Bio rilevante ma non tutti i criteri dell'ICP sono dimostrati.
+- Esempio: founder SaaS confermato ma nessuna prova esplicita di bootstrap.
+
+**60-74 — Match plausibile ("forse buono")**
+- Ruolo corretto. Settore corretto o adiacente. Pochi segnali comportamentali.
+- Vale comunque la pena valutare per outreach, ma con messaggio generico.
+- Esempio: founder in tech ma non SaaS specifico, bio neutra, post non rilevanti.
+
+**40-59 — Mismatch debole**
+- Ruolo o settore divergono dall'ICP. Match solo superficiale (es. parola chiave in headline).
+- Outreach probabilmente inefficace.
+
+**0-39 — Mismatch chiaro**
+- Profilo fuori target (ruolo sbagliato, settore sbagliato, o profilo inattivo).
+- Non vale crediti per outreach.
+
+# PENALTY DETERMINISTICI (applica SEMPRE)
+- Bio mancante o < 50 caratteri: -15
+- Nessun post recente (array vuoto): -10
+- Headline generica senza ruolo specifico (es. "Entrepreneur"): -10
+- Follower count incoerente con l'ICP (se specificato): -10
+- Lingua dei post diversa da quella dell'ICP: -5
+
+# REGOLE DI COMPORTAMENTO
+1. **In dubbio scendi**: se non sei sicuro tra 75 e 80, scrivi 73. Tra 60 e 65, scrivi 58. La banda alta richiede prove.
+2. **Non inventare**: se la bio non menziona qualcosa, non assumere che ci sia.
+3. **best_context (campo c)**: scrivi UN aggancio concreto per il primo messaggio outreach, citando un fatto specifico dal profilo (un post, una posizione, un risultato). Max 200 caratteri. Se non ci sono agganci concreti, scrivi stringa vuota.
+4. **match_reason (campo r)**: 1 frase, max 150 caratteri. Spiega il "perché" dello score citando il criterio chiave.
+
+# FORMATO OUTPUT
+Rispondi con SOLO un array JSON valido, nessun markdown, nessun testo prima/dopo.
+Schema per ogni elemento: { "i": number, "s": number, "r": string, "c": string }
+Dove "i" è l'indice del profilo nell'input (parte da 0).
+
+# ESEMPIO DI SCORING BORDERLINE
+ICP: "Founder di startup SaaS B2B in Italia che fa cold outreach su LinkedIn"
+Profilo: headline "Co-Founder @ TechCo | We build dev tools", bio "Building developer tools for European teams", post: "Hiring a designer".
+
+Output corretto: { "i": 0, "s": 67, "r": "Founder in tech B2B ma nessuna prova di SaaS o outreach diretto", "c": "" }
+Motivazione: ruolo corretto (founder), settore adiacente (dev tools = B2B ma non chiaramente SaaS), nessun segnale comportamentale sull'outreach. Sta nella banda 60-74 con penalty per bio corta.`;
+
+function parseScoreResponse(text: string): ScoreItem[] {
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const matches = cleaned.match(/\{[^{}]*"i"\s*:\s*\d+[^{}]*\}/g) ?? [];
+    return matches
+      .map((m) => {
+        try {
+          return JSON.parse(m);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as ScoreItem[];
+  }
+}
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") {
@@ -63,50 +118,48 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { data: candidates, error } = await supabase
+    const { data: profiles, error } = await supabase
       .from("search_results")
-      .select(
-        "id, full_name, headline, location, follower_count, bio, recent_posts",
-      )
-      .eq("search_id", searchId);
+      .select("id, full_name, headline, location, follower_count, bio, recent_posts")
+      .eq("search_id", searchId)
+      .order("created_at", { ascending: true });
 
     if (error) {
       throw new Error(`Failed to fetch candidates: ${error.message}`);
     }
 
-    if (!candidates || candidates.length === 0) {
+    if (!profiles || profiles.length === 0) {
       return new Response(
-        JSON.stringify({ message: "No candidates to score" }),
+        JSON.stringify({ scored: 0, message: "No candidates to score" }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
 
-    type CandidateRow = {
-      id: string;
-      full_name: string | null;
-      headline: string | null;
-      location: string | null;
-      follower_count: number | null;
-      bio: string | null;
-      recent_posts: RecentPost[] | null;
-    };
+    type RecentPost = { text?: string; postedAt?: string; url?: string };
 
-    const profilesForClaude: ProfileForClaude[] = (candidates as CandidateRow[])
-      .map((c, index) => ({
-        index,
-        id: c.id,
-        fullName: c.full_name,
-        headline: c.headline,
-        location: c.location,
-        followerCount: c.follower_count,
-        bio: c.bio ?? "",
-        recentPosts: Array.isArray(c.recent_posts)
-          ? c.recent_posts.slice(0, 3).map((p) => ({
-            text: p.text?.slice(0, 300),
-            postedAt: p.postedAt,
-          }))
-          : [],
-      }));
+    const profileInput = profiles.map((p, i) => {
+      const posts = (Array.isArray(p.recent_posts) ? p.recent_posts as RecentPost[] : [])
+        .slice(0, POSTS_PER_PROFILE)
+        .map((post) => (post.text ?? "").slice(0, POST_TEXT_LIMIT))
+        .filter(Boolean);
+
+      return {
+        i,
+        headline: p.headline ?? "",
+        location: p.location ?? "",
+        followers: p.follower_count ?? 0,
+        bio: (p.bio ?? "").slice(0, 1500),
+        posts,
+      };
+    });
+
+    const userMessage = `# ICP TARGET
+${icpPrompt}
+
+# PROFILI DA VALUTARE (${profileInput.length})
+${JSON.stringify(profileInput)}
+
+Restituisci l'array JSON di scoring per tutti i ${profileInput.length} profili.`;
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -116,29 +169,10 @@ Deno.serve(async (req) => {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 8000,
-        system:
-          `You are an expert B2B sales analyst. You evaluate LinkedIn profiles against an ICP (Ideal Customer Profile) description.
-
-You will receive a list of profiles and an ICP description. For each profile, evaluate how well it matches the ICP based on their headline, bio, and recent posts.
-
-IMPORTANT: Return ONLY a valid JSON array, no markdown, no backticks, no explanation. Each element must have exactly these fields:
-- index: number (same as input)
-- match_score: number 0-100 (0=no match, 100=perfect match)
-- match_reason: string (1-2 sentences explaining why this profile matches or doesn't match the ICP, be specific and reference actual content from their bio or posts)
-- best_context: string (the single most relevant quote or sentence from their bio or posts to use as an outreach hook. Empty string if no relevant content found)`,
-        messages: [
-          {
-            role: "user",
-            content: `ICP Description: ${icpPrompt}
-
-Profiles to evaluate:
-${JSON.stringify(profilesForClaude, null, 2)}
-
-Return a JSON array with one object per profile. Use the same index values as the input.`,
-          },
-        ],
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userMessage }],
       }),
     });
 
@@ -148,64 +182,41 @@ Return a JSON array with one object per profile. Use the same index values as th
     }
 
     const data = await response.json();
-    let text: string = data.content[0].text.trim();
+    const rawText = (data.content as Array<{ type: string; text?: string }>)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text ?? "")
+      .join("");
 
-    // Rimuovi eventuali backtick markdown
-    text = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    const scores = parseScoreResponse(rawText);
+    console.log(`[score] ricevuti ${scores.length}/${profileInput.length} score`);
 
-    let scores: ClaudeScore[];
-    try {
-      scores = JSON.parse(text);
-    } catch {
-      // Prova a estrarre array anche se il JSON è troncato
-      const match = text.match(/^\[[\s\S]*/);
-      if (match) {
-        // Aggiungi chiusura se troncato
-        let partial = match[0];
-        // Trova l'ultimo oggetto completo
-        const lastComplete = partial.lastIndexOf('},');
-        if (lastComplete > 0) {
-          partial = partial.substring(0, lastComplete + 1) + ']';
-          try {
-            scores = JSON.parse(partial);
-          } catch {
-            throw new Error(`Failed to parse Claude response: ${text.substring(0, 200)}`);
-          }
-        } else {
-          throw new Error(`Failed to parse Claude response: ${text.substring(0, 200)}`);
-        }
-      } else {
-        throw new Error(`Failed to parse Claude response: ${text.substring(0, 200)}`);
-      }
-    }
-
-    if (!Array.isArray(scores)) {
-      throw new Error("Claude response is not an array");
+    if (!Array.isArray(scores) || scores.length === 0) {
+      throw new Error(`Failed to parse Claude response: ${rawText.substring(0, 200)}`);
     }
 
     await Promise.all(
-      scores.map(async (score) => {
-        const candidate = profilesForClaude[score.index];
-        if (!candidate) return;
+      scores.map(async (s) => {
+        const profile = profiles[s.i];
+        if (!profile) return;
 
         await supabase
           .from("search_results")
           .update({
-            match_score: score.match_score,
-            match_reason: score.match_reason,
-            best_context: score.best_context,
+            match_score: s.s,
+            match_reason: s.r,
+            best_context: s.c,
           })
-          .eq("id", candidate.id);
+          .eq("id", profile.id);
       }),
     );
 
     const topMatches = [...scores]
-      .sort((a, b) => b.match_score - a.match_score)
+      .sort((a, b) => b.s - a.s)
       .slice(0, 3)
       .map((s) => ({
-        name: profilesForClaude[s.index]?.fullName,
-        score: s.match_score,
-        reason: s.match_reason,
+        name: profiles[s.i]?.full_name,
+        score: s.s,
+        reason: s.r,
       }));
 
     return new Response(
