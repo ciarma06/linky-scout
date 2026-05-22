@@ -17,6 +17,8 @@ const CHUNK_SIZE = 6;
 const COST_PROFILE_DETAILS = 1;
 const COST_POSTS_ALL = 1;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
@@ -109,6 +111,10 @@ Deno.serve(async (req) => {
       `${postsCalls} posts (${postsFailed} fail), pending: ${stillPending ?? 0}, done: ${done}`,
     );
     console.log(`[stage2] CREDITI LINKDAPI questo chunk: ${creditsUsed}`);
+
+    if (!done) {
+      await sleep(25_000);
+    }
 
     return new Response(
       JSON.stringify({

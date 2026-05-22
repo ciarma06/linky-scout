@@ -21,6 +21,8 @@ const PREFILTER_FLOOR = 15;
 const COST_SEARCH_PEOPLE = 1;
 const COST_PROFILE_OVERVIEW = 2;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 const HEADLINE_BLACKLIST = [
   "nonprofit", "non profit", "ministry", "ministries", "charity",
   "church", "religious", "youth outreach", "community outreach",
@@ -197,6 +199,10 @@ Deno.serve(async (req) => {
       `pending rimanenti: ${stillPending ?? 0}, done: ${done}`,
     );
     console.log(`[stage1] CREDITI LINKDAPI questo chunk: ${creditsUsed}`);
+
+    if (!done) {
+      await sleep(15_000);
+    }
 
     return new Response(
       JSON.stringify({
