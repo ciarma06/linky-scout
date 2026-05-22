@@ -10,17 +10,14 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// Batch size 10: tier Hobby = 30 req/min. Stage1 fa 1 chiamata per profilo
-// (profile/overview), quindi 10 in burst = 10 req, ampio margine sotto i 30.
-const BATCH_SIZE = 10;
-const BATCH_PAUSE_MS = 61_000;
+// Chunk piccolo: 12 profili = 12 chiamate profile/overview in burst.
+// Su tier Hobby (30 req/min) sta sotto il limite. Niente pause interne.
+// Ogni chunk gira in ~10-15s. Self-loop fino a esaurimento.
+const CHUNK_SIZE = 12;
 const SEARCH_COUNT = 50;
 const TARGET_CANDIDATES = 40;
 const PREFILTER_FLOOR = 15;
 
-// Costo crediti LinkdAPI per chiamata
 const COST_SEARCH_PEOPLE = 1;
 const COST_PROFILE_OVERVIEW = 2;
 
@@ -56,8 +53,7 @@ const headlineIsBlacklisted = (headline: string): boolean => {
 Deno.serve(async (req) => {
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { "Content-Type": "application/json" },
+      status: 405, headers: { "Content-Type": "application/json" },
     });
   }
 
@@ -78,118 +74,136 @@ Deno.serve(async (req) => {
     const provider = getLeadProvider();
     const { keyword, title, geoUrns, industry, language, maxFollowers } = filters;
 
-    // Counter crediti LinkdAPI
+    // --- Verifica se questa è la PRIMA invocazione per questo searchId ---
+    // Strategia: se ci sono già righe in search_results con follower_count = -1,
+    // significa che abbiamo già fatto search/people ma non finito gli overview.
+    // -1 è un marker "in pending overview" (real followerCount è sempre >= 0).
+    const { count: pendingCount } = await supabase
+      .from("search_results")
+      .select("id", { count: "exact", head: true })
+      .eq("search_id", searchId)
+      .eq("follower_count", -1);
+
     let creditsUsed = 0;
-    let overviewCalls = 0;
+    const isFirstCall = (pendingCount ?? 0) === 0 && !await hasAnyResults(searchId);
 
-    // STEP 1: search/people (1 credito)
-    const rawProfiles: ProfileBasic[] = await provider.searchProfiles({
-      keyword, title, geoUrns, industry, language, count: SEARCH_COUNT,
-    });
-    creditsUsed += COST_SEARCH_PEOPLE;
+    // --- PRIMA INVOCAZIONE: search/people + insert scheletri ---
+    if (isFirstCall) {
+      const rawProfiles: ProfileBasic[] = await provider.searchProfiles({
+        keyword, title, geoUrns, industry, language, count: SEARCH_COUNT,
+      });
+      creditsUsed += COST_SEARCH_PEOPLE;
 
-    console.log(`[stage1] search/people: ${rawProfiles.length} profili grezzi`);
+      console.log(`[stage1] search/people: ${rawProfiles.length} profili grezzi`);
 
-    // STEP 2: pre-filtro headline (title match + blacklist)
-    const titleFiltered = rawProfiles.filter((p) =>
-      headlineMatchesTitle(p.headline ?? "", title ?? "")
-    );
-    const preFiltered = titleFiltered.filter((p) =>
-      !headlineIsBlacklisted(p.headline ?? "")
-    );
+      const titleFiltered = rawProfiles.filter((p) =>
+        headlineMatchesTitle(p.headline ?? "", title ?? "")
+      );
+      const preFiltered = titleFiltered.filter((p) =>
+        !headlineIsBlacklisted(p.headline ?? "")
+      );
 
-    const blacklisted = titleFiltered.length - preFiltered.length;
+      const blacklisted = titleFiltered.length - preFiltered.length;
+      console.log(
+        `[stage1] post-filtro headline: ${preFiltered.length}/${rawProfiles.length} ` +
+        `(title match: ${titleFiltered.length}, blacklisted: ${blacklisted})`,
+      );
 
-    console.log(
-      `[stage1] post-filtro headline: ${preFiltered.length}/${rawProfiles.length} ` +
-      `(title match: ${titleFiltered.length}, blacklisted: ${blacklisted}, ` +
-      `risparmio: ${(rawProfiles.length - preFiltered.length) * COST_PROFILE_OVERVIEW} crediti)`,
-    );
+      const toEnrich = preFiltered.length >= PREFILTER_FLOOR ? preFiltered : rawProfiles;
 
-    const toEnrich = preFiltered.length >= PREFILTER_FLOOR
-      ? preFiltered
-      : rawProfiles;
+      // Inseriamo scheletri con follower_count = -1 come marker "pending overview"
+      const rows = toEnrich.slice(0, TARGET_CANDIDATES).map((p) => ({
+        search_id: searchId,
+        linkedin_urn: p.urn,
+        linkedin_url: p.url,
+        full_name: p.fullName,
+        headline: p.headline,
+        location: p.location,
+        follower_count: -1, // marker "pending"
+        match_score: null,
+        saved_to_crm: false,
+      }));
 
-    if (toEnrich.length < preFiltered.length) {
-      console.log(`[stage1] WARNING: pre-filtro disabilitato (sotto soglia ${PREFILTER_FLOOR})`);
+      if (rows.length > 0) {
+        const { error } = await supabase.from("search_results").insert(rows);
+        if (error) throw new Error(`Insert failed: ${error.message}`);
+      }
+
+      console.log(`[stage1] inseriti ${rows.length} scheletri (overview pendente)`);
     }
 
-    // STEP 3: profile/overview SOLO sui survivors (2 crediti/cad)
-    const enriched: Array<ProfileBasic & { followerCount: number }> = [];
+    // --- TUTTE LE INVOCAZIONI: processa un chunk di scheletri pending ---
+    const { data: pending } = await supabase
+      .from("search_results")
+      .select("id, linkedin_url, linkedin_urn")
+      .eq("search_id", searchId)
+      .eq("follower_count", -1)
+      .limit(CHUNK_SIZE);
 
-    for (let i = 0; i < toEnrich.length; i += BATCH_SIZE) {
-      const batch = toEnrich.slice(i, i + BATCH_SIZE);
+    let overviewCalls = 0;
+    let overviewFailed = 0;
 
-      const results = await Promise.all(
-        batch.map(async (p) => {
-          const username = p.url.split("/in/")[1]?.replace(/\/$/, "") ?? "";
-          if (!username) return null;
-          overviewCalls += 1; // conta SEMPRE, anche errori (LinkdAPI consuma)
+    if (pending && pending.length > 0) {
+      await Promise.all(
+        pending.map(async (p) => {
+          const username = p.linkedin_url.split("/in/")[1]?.replace(/\/$/, "") ?? "";
+          overviewCalls += 1;
+
+          if (!username) {
+            // Username invalido: cancella la riga
+            await supabase.from("search_results").delete().eq("id", p.id);
+            return;
+          }
+
           try {
             const overview = await provider.getProfileOverview(username);
-            return {
-              ...p,
-              urn: overview.urn ?? p.urn,
-              followerCount: overview.followerCount ?? 0,
-            };
+            const fc = overview.followerCount ?? 0;
+
+            // Filtro maxFollowers: se sopra soglia, cancella subito
+            if (maxFollowers && fc > maxFollowers) {
+              await supabase.from("search_results").delete().eq("id", p.id);
+              return;
+            }
+
+            await supabase
+              .from("search_results")
+              .update({
+                follower_count: fc,
+                linkedin_urn: overview.urn ?? p.linkedin_urn,
+              })
+              .eq("id", p.id);
           } catch {
-            return null;
+            overviewFailed += 1;
+            // Fallito: cancella per non far rimanere zombie scheletri
+            await supabase.from("search_results").delete().eq("id", p.id);
           }
         }),
       );
-
-      for (const r of results) {
-        if (r !== null) enriched.push(r);
-      }
-
-      if (i + BATCH_SIZE < toEnrich.length) {
-        await sleep(BATCH_PAUSE_MS);
-      }
     }
 
     creditsUsed += overviewCalls * COST_PROFILE_OVERVIEW;
 
-    // STEP 4: filtro hard sui followers
-    const final = enriched
-      .filter((p) => !maxFollowers || p.followerCount <= maxFollowers)
-      .slice(0, TARGET_CANDIDATES);
+    // --- Verifica se restano altri pending da processare ---
+    const { count: stillPending } = await supabase
+      .from("search_results")
+      .select("id", { count: "exact", head: true })
+      .eq("search_id", searchId)
+      .eq("follower_count", -1);
 
-    console.log(`[stage1] candidati finali: ${final.length}`);
+    const done = (stillPending ?? 0) === 0;
 
-    // LOG CREDITI LINKDAPI STAGE 1
     console.log(
-      `[stage1] CREDITI LINKDAPI: ${creditsUsed} ` +
-      `(search/people: 1 × ${COST_SEARCH_PEOPLE} = ${COST_SEARCH_PEOPLE}, ` +
-      `profile/overview: ${overviewCalls} × ${COST_PROFILE_OVERVIEW} = ${overviewCalls * COST_PROFILE_OVERVIEW})`,
+      `[stage1] chunk: ${overviewCalls} overview, ${overviewFailed} falliti, ` +
+      `pending rimanenti: ${stillPending ?? 0}, done: ${done}`,
     );
-
-    // STEP 5: insert in search_results
-    const rows = final.map((p) => ({
-      search_id: searchId,
-      linkedin_urn: p.urn,
-      linkedin_url: p.url,
-      full_name: p.fullName,
-      headline: p.headline,
-      location: p.location,
-      follower_count: p.followerCount,
-      match_score: null,
-      saved_to_crm: false,
-    }));
-
-    if (rows.length > 0) {
-      const { error: insertError } = await supabase
-        .from("search_results")
-        .insert(rows);
-      if (insertError) {
-        throw new Error(`Failed to insert results: ${insertError.message}`);
-      }
-    }
+    console.log(`[stage1] CREDITI LINKDAPI questo chunk: ${creditsUsed}`);
 
     return new Response(
       JSON.stringify({
-        inserted: rows.length,
-        prefiltered: preFiltered.length,
-        blacklisted,
+        done,
+        chunkProcessed: overviewCalls,
+        chunkFailed: overviewFailed,
+        stillPending: stillPending ?? 0,
         creditsUsed,
         searchId,
       }),
@@ -203,3 +217,12 @@ Deno.serve(async (req) => {
     );
   }
 });
+
+// Helper: verifica se esistono righe per questo searchId (anche con followerCount valido)
+async function hasAnyResults(searchId: string): Promise<boolean> {
+  const { count } = await supabase
+    .from("search_results")
+    .select("id", { count: "exact", head: true })
+    .eq("search_id", searchId);
+  return (count ?? 0) > 0;
+}

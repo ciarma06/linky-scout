@@ -36,11 +36,6 @@ async function updateJob(jobId: string, updates: Record<string, unknown>) {
   await supabase.from("search_jobs").update(updates).eq("id", jobId);
 }
 
-/**
- * Triggera process-pending-jobs in background per lanciare subito il prossimo stage.
- * Usa EdgeRuntime.waitUntil per garantire che la fetch parta prima dello shutdown dell'isolate.
- * Se waitUntil non è disponibile, nessun problema: il cron raccoglierà il job entro 60s.
- */
 function triggerNextStage() {
   const promise = fetch(`${SUPABASE_URL}/functions/v1/process-pending-jobs`, {
     method: "POST",
@@ -53,7 +48,7 @@ function triggerNextStage() {
   try {
     EdgeRuntime.waitUntil(promise);
   } catch {
-    // EdgeRuntime.waitUntil non disponibile — il cron farà da safety net
+    // EdgeRuntime non disponibile, cron farà da safety net
   }
 }
 
@@ -75,31 +70,69 @@ async function stageStart(jobId: string, icpPrompt: string) {
   });
 }
 
+/**
+ * Stage SEARCH ora è CHUNKED: ogni invocazione processa un chunk di profili
+ * (~12 overview). Se restano pending, fa loop su sé stesso. Quando finisce,
+ * avanza a "enrich".
+ */
 async function stageSearch(jobId: string, searchId: string, job: Record<string, unknown>) {
   await updateJob(jobId, { progress: 15, current_stage: "searching" });
 
   const filters = job.parsed_filters;
-  if (!filters) throw new Error("parsed_filters mancanti nel job — stage 'start' non completato?");
+  if (!filters) throw new Error("parsed_filters mancanti — stage 'start' non completato?");
 
-  await callFunction("stage1-search", { searchId, filters });
+  // La function ora restituisce { done, stillPending, ... }
+  const response = await callFunction("stage1-search", { searchId, filters });
+  const done = response.done === true;
 
-  await updateJob(jobId, {
-    progress: 40,
-    current_stage: "enrich",
-    next_stage: "enrich",
-  });
+  if (done) {
+    await updateJob(jobId, {
+      progress: 40,
+      current_stage: "enrich",
+      next_stage: "enrich",
+    });
+  } else {
+    // Self-loop: rimaniamo in stage "search" per processare il prossimo chunk
+    // Aggiorniamo il progress proporzionalmente ai pending rimanenti
+    const stillPending = response.stillPending ?? 0;
+    const progress = stillPending > 0
+      ? Math.min(35, 20 + Math.floor((40 - stillPending) / 40 * 15))
+      : 35;
+    await updateJob(jobId, {
+      progress,
+      current_stage: "searching",
+      next_stage: "search", // loop
+    });
+  }
 }
 
+/**
+ * Stage ENRICH ora è CHUNKED: ogni invocazione processa ~6 profili.
+ * Loop su sé stesso finché ci sono bio NULL, poi avanza a "score".
+ */
 async function stageEnrich(jobId: string, searchId: string) {
   await updateJob(jobId, { progress: 50, current_stage: "enriching" });
 
-  await callFunction("stage2-enrich", { searchId });
+  const response = await callFunction("stage2-enrich", { searchId });
+  const done = response.done === true;
 
-  await updateJob(jobId, {
-    progress: 70,
-    current_stage: "score",
-    next_stage: "score",
-  });
+  if (done) {
+    await updateJob(jobId, {
+      progress: 70,
+      current_stage: "score",
+      next_stage: "score",
+    });
+  } else {
+    const stillPending = response.stillPending ?? 0;
+    const progress = stillPending > 0
+      ? Math.min(68, 50 + Math.floor((40 - stillPending) / 40 * 20))
+      : 68;
+    await updateJob(jobId, {
+      progress,
+      current_stage: "enriching",
+      next_stage: "enrich", // loop
+    });
+  }
 }
 
 async function stageScore(jobId: string, searchId: string, icpPrompt: string) {
