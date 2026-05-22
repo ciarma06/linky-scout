@@ -3,6 +3,135 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 
 const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
+const MODEL = "claude-sonnet-4-6";
+const MAX_TOKENS = 600;
+
+// System prompt: role specifico (compiler) + linguaggio diretto.
+// Niente "expert" generico, niente "helpful".
+const SYSTEM_PROMPT = `You are a LinkedIn search filter compiler. Your job: convert a user's ICP description into structured search parameters that LinkdAPI accepts. You output ONLY the requested XML structure, nothing else.`;
+
+// User message: XML-structured con <task>, <field_specs>, <mappings>, <examples>, <output_format>.
+// Esempi pensati per coprire 4 casi diversi: tech B2B, fintech UK, behavioral stealth, fashion/B2C edge case.
+const buildUserMessage = (icp: string) => `<task>
+Convert the ICP description below into LinkedIn search filters. Output a valid JSON object wrapped in <filters>...</filters> tags. Do not output anything else.
+</task>
+
+<field_specs>
+- keyword (string, 1-3 words): topic/industry term that founders in this ICP use IN THEIR LINKEDIN HEADLINE. NOT a literal copy of the user's words. Translate user intent into LinkedIn vernacular. Empty string if no clear keyword.
+- title (string, 1-2 words): job title token, lowercase. Common values: "founder", "ceo", "cto", "head", "vp", "director". Empty string if not specified.
+- geoUrns (string array): LinkedIn geo IDs ONLY for countries listed in <mappings>. If user mentions a country not in mappings, omit it. Empty array if no country specified.
+- industry (string array): LinkedIn industry IDs ONLY for industries listed in <mappings>. Omit if no clear match. Empty array if not applicable.
+- language (string): "en" for English-speaking ICPs, "it" for Italian, "fr" for French, "de" for German, "es" for Spanish. Empty string if not specified.
+- maxFollowers (number or null): if user says "under Xk" or "less than X" followers, return X*1000 or X. Null if not mentioned.
+- behavioralCriteria (string array): behavioral signals (max 4 items, each max 5 words) that score-profiles will look for in bio/posts. Empty array if none mentioned.
+</field_specs>
+
+<mappings>
+GEO URNS (use only these):
+- USA / United States: "103644278"
+- UK / United Kingdom: "101165590"
+- Germany: "101282230"
+- France: "105015875"
+- Italy: "103350119"
+- Spain: "105646813"
+- Netherlands: "102890719"
+- Canada: "101174742"
+- Australia: "101452733"
+- India: "102713980"
+- Europe (broad): use UK + Germany + France + Italy + Spain + Netherlands together
+
+INDUSTRY IDS (use only these, omit if uncertain):
+- SaaS / Software / B2B Software: "4"
+- IT Services: "96"
+- Internet / Online platforms: "6"
+- Marketing & Advertising: "80"
+- Financial Services / Fintech: "43"
+- Banking: "41"
+- Insurance: "42"
+- E-commerce / Retail: "27"
+- Media (Publishing): "82"
+- Media Production: "126"
+- Entertainment: "28"
+- Telecommunications: "8"
+- Management Consulting: "11"
+- Education / E-Learning: "132"
+- Venture Capital / Private Equity: "106"
+- Pharmaceuticals: "15"
+- Biotechnology: "12"
+- Renewable Energy: "60"
+- Real Estate: "44"
+- Manufacturing: "56"
+- Hospitality: "31"
+- Healthcare: "14"
+
+KEYWORD TRANSLATION RULES (use these when applicable):
+- "stealth founder" / "building new thing" / "next venture" → keyword: "stealth"
+- "bootstrapped" / "no funding" / "indie hacker" → keyword: "bootstrapped"
+- "early stage" / "pre-seed" / "just started" → keyword: "founder" (the stage is behavioral, not in headline)
+- "agency owner" → keyword: "agency"
+- generic SaaS founder → keyword: "SaaS"
+- generic B2B → keyword: "B2B"
+</mappings>
+
+<examples>
+<example>
+<input>Founder of B2B SaaS startup in the US, less than 10k followers, does cold outreach himself</input>
+<output><filters>{"keyword":"SaaS","title":"founder","geoUrns":["103644278"],"industry":["4"],"language":"en","maxFollowers":10000,"behavioralCriteria":["does cold outreach personally","writes own messages"]}</filters></output>
+</example>
+
+<example>
+<input>CEOs of fintech companies in UK or Germany, bootstrapped</input>
+<output><filters>{"keyword":"bootstrapped","title":"ceo","geoUrns":["101165590","101282230"],"industry":["43"],"language":"en","maxFollowers":null,"behavioralCriteria":["bootstrapped","no external funding"]}</filters></output>
+</example>
+
+<example>
+<input>Founder "Building my next thing", Europe/USA/UK, less than 15k followers</input>
+<output><filters>{"keyword":"stealth","title":"founder","geoUrns":["103644278","101165590","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":15000,"behavioralCriteria":["building stealth project","between ventures","working on new idea"]}</filters></output>
+</example>
+
+<example>
+<input>fondatori di startup di moda in italia con meno di 20k follower</input>
+<output><filters>{"keyword":"fashion","title":"founder","geoUrns":["103350119"],"industry":[],"language":"it","maxFollowers":20000,"behavioralCriteria":[]}</filters></output>
+</example>
+</examples>
+
+<rules>
+- If the user input is vague or doesn't mention a field, return the empty default for that field (empty string, empty array, or null). DO NOT GUESS.
+- Country names not in <mappings> must be OMITTED from geoUrns, even if mentioned by the user.
+- Industries not in <mappings> must be OMITTED from industry array.
+- behavioralCriteria items must be short (max 5 words each) and ONLY include signals the user explicitly mentioned. Do not invent.
+- Keyword translation rules in <mappings> take priority over literal user words.
+</rules>
+
+<output_format>
+Output exactly one line:
+<filters>{...valid JSON object...}</filters>
+
+Nothing before. Nothing after. No markdown. No reasoning.
+</output_format>
+
+<icp_input>
+${icp}
+</icp_input>`;
+
+// Estrai il JSON da dentro <filters>...</filters>. Più robusto di JSON.parse(text.trim())
+// perché tollera testo extra prima/dopo, code fences accidentali, etc.
+function extractFilters(text: string): unknown {
+  // Cerca pattern <filters>...</filters>
+  const xmlMatch = text.match(/<filters>([\s\S]*?)<\/filters>/);
+  let jsonText = xmlMatch?.[1]?.trim() ?? text.trim();
+
+  // Fallback: rimuovi markdown fence se presente
+  jsonText = jsonText.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+
+  // Fallback: trova il primo {...} bilanciato se ancora c'è rumore intorno
+  if (!jsonText.startsWith("{")) {
+    const objMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (objMatch) jsonText = objMatch[0];
+  }
+
+  return JSON.parse(jsonText);
+}
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") {
@@ -38,34 +167,30 @@ Deno.serve(async (req) => {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 500,
-        system:
-          "You are an expert at parsing ICP (Ideal Customer Profile) descriptions into structured LinkedIn search filters. Always respond with valid JSON only, no preamble, no explanation, no markdown backticks.",
-        messages: [
-          {
-            role: "user",
-            content:
-              `Parse this ICP description into LinkedIn search filters:\n\n${prompt}\n\nReturn a JSON object with these exact fields:\n- keyword: string (1-3 words describing the industry or topic, e.g. "B2B SaaS")\n- title: string (single job title keyword, e.g. "founder" or "ceo")\n- geoUrns: array of strings (LinkedIn geo URN IDs for the countries mentioned. Use these mappings: USA/United States="103644278", UK/United Kingdom="101165590", Germany="101282230", France="105015875", Italy="103350119", Spain="105646813", Netherlands="102890719", Canada="101174742", Australia="101452733", India="102713980". Empty array if no country specified)\n- language: string (use "en" for English, empty string if not specified)\n- maxFollowers: number or null (if the user mentions a follower limit like "under 10k", put 10000. null if not mentioned)\n- behavioralCriteria: array of strings (behavioral signals to look for in bio and posts, e.g. ["does outreach alone", "bootstrapped", "no funding"]). Empty array if none mentioned.\n\nIMPORTANT: Return ONLY the raw JSON object, no markdown, no backticks, nothing else.`,
-          },
-        ],
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: buildUserMessage(prompt) }],
       }),
     });
 
     if (!response.ok) {
-      const err = await response.json();
+      const err = await response.json().catch(() => ({}));
       throw new Error(`Claude error: ${JSON.stringify(err)}`);
     }
 
     const data = await response.json();
-    const text = data.content[0].text.trim();
+    const text = data.content[0]?.text ?? "";
 
     let filters;
     try {
-      filters = JSON.parse(text);
-    } catch {
-      throw new Error("Failed to parse Claude response as JSON");
+      filters = extractFilters(text);
+    } catch (parseErr) {
+      console.error(`[parse-icp] Parse failed. Raw text: ${text.substring(0, 300)}`);
+      throw new Error(`Failed to parse Claude response: ${parseErr instanceof Error ? parseErr.message : "unknown"}`);
     }
+
+    console.log(`[parse-icp] filters: ${JSON.stringify(filters)}`);
 
     return new Response(
       JSON.stringify({ filters, originalPrompt: prompt }),
