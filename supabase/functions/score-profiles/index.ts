@@ -15,15 +15,10 @@ const MAX_TOKENS = 5000;
 const POST_TEXT_LIMIT = 250;
 const POSTS_PER_PROFILE = 3;
 const MIN_BIO_LENGTH = 50;
-
-// Soglia minima di score sotto la quale i profili vengono ELIMINATI dal DB
-// (non solo nascosti). Cambia la cache e la history di conseguenza.
 const SCORE_THRESHOLD = 50;
 
 type ScoreItem = { i: number; s: number; r: string; c: string };
 
-// Prompt interamente in inglese: forza Claude a rispondere SEMPRE in inglese
-// indipendentemente dalla lingua dell'ICP fornito dall'utente.
 const SYSTEM_PROMPT = `You are a senior B2B analyst specializing in LinkedIn lead qualification for cold outreach.
 
 Your task: assign each profile a score from 0-100 indicating how well it matches the given ICP.
@@ -55,8 +50,29 @@ Your task: assign each profile a score from 0-100 indicating how well it matches
 - Follower count incoherent with ICP (if specified): -10
 - Post language different from ICP language: -5
 
+# CRITICAL DISAMBIGUATION: USER vs SELLER OF THE ICP KEYWORD
+The ICP describes BUYERS of a product/service. People who SELL that same product/service to others are NOT a match, even if they use the same keywords.
+
+For ANY topic mentioned in the ICP (cold outreach, marketing, AI, lead gen, growth, SEO, etc.), distinguish:
+- **USER (correct match)**: founder whose PRODUCT is something else. They USE the ICP topic as a method to grow their own business. Their bio/posts describe the topic as something they DO for themselves.
+- **SELLER (wrong match, MAX score 45)**: founder whose PRODUCT IS the ICP topic. They SELL it as a service/tool to others. Their bio/posts describe the topic as their OFFERING.
+
+Signal phrases that indicate a SELLER (apply cap at 45):
+- "we book meetings for..."
+- "we help companies with..."
+- "done-for-you [topic]"
+- "[topic] as a service"
+- "we generate [leads/sales/meetings] for..."
+- "I help B2B SaaS [grow/scale/get clients]"
+- "outreach agency", "growth agency", "marketing agency", "lead gen agency"
+- Product name explicitly contains the topic (e.g. "OutreachPro", "LeadEngine", "GrowthBot")
+
+Examples:
+- ICP "founders who do cold outreach" + profile "Founder of LeadGenAgency, we book meetings for SaaS" → score 45 (SELLER)
+- ICP "founders who do cold outreach" + profile "Founder of HRTool, I do cold outreach to find customers" → score 80+ (USER)
+
 # OUT-OF-ICP B2B SECTORS
-If headline or bio indicate one of these sectors, the MAXIMUM score is 35:
+If headline or bio indicate one of these sectors, MAX score 35:
 - Nonprofit, charity, ministry, religious organization
 - Community/youth outreach, social work, advocacy
 - Healthcare/medical practice (unless ICP is explicitly healthcare)
@@ -65,26 +81,41 @@ If headline or bio indicate one of these sectors, the MAXIMUM score is 35:
 # BEHAVIOR RULES
 1. **When in doubt, go down**: if unsure between 75 and 80, write 73. Between 60 and 65, write 58. The high band requires proof.
 2. **Don't invent**: if bio doesn't mention something, don't assume it's there.
-3. **best_context (field c)**: write ONE concrete hook for the first outreach message, citing a specific fact from the profile (a post, a position, a result). Max 200 characters. Empty string if no concrete hook.
-4. **match_reason (field r)**: 1 sentence, max 150 characters. Explain the "why" of the score citing the key criterion.
-5. **ALWAYS WRITE IN ENGLISH**: match_reason and best_context must be in English, regardless of the language of the ICP.
+3. **Evidence must be active, not passive**: "received a cold email", "replied to an outreach", "was pitched by X", "got a DM from Y" are NOT behavioral signals for doing outreach. Only count signals where the profile ACTIVELY does the action (sent, wrote, built, ran, tested, launched).
+4. **best_context (field c)**: write ONE concrete hook for the first outreach message, citing a specific fact from the profile. Max 200 characters. Empty string if no concrete hook.
+5. **match_reason (field r)**: 1 sentence, max 150 characters. Explain the "why" of the score citing the key criterion.
+6. **ALWAYS WRITE IN ENGLISH**: match_reason and best_context must be in English regardless of ICP language.
 
 # OUTPUT FORMAT
 Respond with ONLY a valid JSON array, no markdown, no text before/after.
 Schema per element: { "i": number, "s": number, "r": string, "c": string }
 Where "i" is the profile index in the input (starts at 0).
 
-# BORDERLINE SCORING EXAMPLE
+# EXAMPLES
+
+<example>
 ICP: "Founder of B2B SaaS startup doing cold outreach on LinkedIn"
 Profile: headline "Co-Founder @ TechCo | We build dev tools", bio "Building developer tools for European teams", post: "Hiring a designer".
+Output: { "i": 0, "s": 67, "r": "Founder in B2B tech but no proof of SaaS or direct outreach", "c": "" }
+</example>
 
-Correct output: { "i": 0, "s": 67, "r": "Founder in B2B tech but no proof of SaaS or direct outreach", "c": "" }
+<example>
+ICP: "Founder of B2B SaaS doing cold outreach"
+Profile: headline "Founder @ LeadFlow | Done-for-you LinkedIn outreach for SaaS", bio "We help B2B SaaS companies generate 50+ meetings/month via cold outreach"
+Output: { "i": 0, "s": 42, "r": "SELLER of outreach services, not a user. Sells the ICP topic instead of using it", "c": "" }
+</example>
 
-# OUT-OF-ICP SECTOR EXAMPLE
-ICP: "Founder of B2B SaaS startup"
+<example>
+ICP: "Founder of B2B SaaS"
 Profile: headline "Founder at Rising Star Outreach", bio "Nonprofit supporting children in need".
+Output: { "i": 0, "s": 18, "r": "Nonprofit charity, completely outside B2B ICP", "c": "" }
+</example>
 
-Correct output: { "i": 0, "s": 18, "r": "Nonprofit charity, completely outside B2B ICP", "c": "" }`;
+<example>
+ICP: "Founder of B2B SaaS doing cold outreach on LinkedIn"
+Profile: headline "Founder @ VoiceFlow | AI voice agents for sales teams", bio "Building voice AI to automate cold calls", post: "Got a cold email today using AI for personalization — interesting tactic."
+Output: { "i": 0, "s": 55, "r": "SaaS founder but only passive outreach signal (received cold email), no active outreach proof", "c": "" }
+</example>`;
 
 function parseScoreResponse(text: string): ScoreItem[] {
   const cleaned = text.replace(/```json|```/g, "").trim();
@@ -152,8 +183,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Routing: separa scorabili da non-scorabili. I non-scorabili saranno
-    // eliminati alla fine insieme ai profili con score basso.
     const scoreable = profiles.filter(isScoreable);
     const insufficient = profiles.filter((p) => !isScoreable(p));
 
@@ -161,14 +190,17 @@ Deno.serve(async (req) => {
       `[score] totale: ${profiles.length}, scorabili: ${scoreable.length}, dati insufficienti: ${insufficient.length}`,
     );
 
-    // Edge case: nessun profilo scorabile
     if (scoreable.length === 0) {
-      // Elimina i profili insufficient e termina
+      // Nessun profilo scorabile: elimina insufficient e termina
       const insufficientIds = insufficient.map((p) => p.id);
       if (insufficientIds.length > 0) {
-        await supabase.from("search_results").delete().in("id", insufficientIds);
+        const { error: delErr } = await supabase
+          .from("search_results")
+          .delete()
+          .in("id", insufficientIds);
+        if (delErr) console.error(`[score] DELETE insufficient failed: ${delErr.message}`);
       }
-      console.log(`[score] WARNING: nessun profilo scorabile, eliminati ${insufficientIds.length} insufficient`);
+      console.log(`[score] WARNING: nessun profilo scorabile, eliminati ${insufficientIds.length}`);
       return new Response(
         JSON.stringify({ scored: 0, deleted: insufficientIds.length }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -199,7 +231,7 @@ ${icpPrompt}
 # PROFILES TO EVALUATE (${profileInput.length})
 ${JSON.stringify(profileInput)}
 
-Return the JSON scoring array for all ${profileInput.length} profiles. Remember: respond in English.`;
+Return the JSON scoring array for all ${profileInput.length} profiles. Remember: respond in English. Apply USER vs SELLER disambiguation strictly.`;
 
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -234,7 +266,7 @@ Return the JSON scoring array for all ${profileInput.length} profiles. Remember:
       throw new Error(`Failed to parse Claude response: ${rawText.substring(0, 200)}`);
     }
 
-    // Update batch: l'indice s.i si riferisce a `scoreable`
+    // Update batch
     await Promise.all(
       scores.map(async (s) => {
         const profile = scoreable[s.i];
@@ -250,30 +282,50 @@ Return the JSON scoring array for all ${profileInput.length} profiles. Remember:
       }),
     );
 
-    // --- DELETE finale: rimuove insufficient + score sotto soglia ---
-    // Cosa elimina: profili con match_score IS NULL (non scorati = insufficient)
-    // OPPURE match_score < SCORE_THRESHOLD. La cache e la history conterranno
-    // solo i profili sopra soglia.
-    const { data: deleted, error: deleteError } = await supabase
+    // --- DELETE robusto: due query separate invece di .or() ---
+    // Bug del precedente .or(): la sintassi PostgREST può non funzionare come atteso
+    // con condizioni miste IS NULL e LT. Due DELETE separate sono garantite.
+
+    // DELETE 1: profili con score < soglia
+    const { data: deletedLowScore, error: delLowErr } = await supabase
       .from("search_results")
       .delete()
       .eq("search_id", searchId)
-      .or(`match_score.is.null,match_score.lt.${SCORE_THRESHOLD}`)
-      .select("id");
+      .lt("match_score", SCORE_THRESHOLD)
+      .select("id, match_score");
 
-    if (deleteError) {
-      console.error(`[score] errore DELETE: ${deleteError.message}`);
+    if (delLowErr) {
+      console.error(`[score] DELETE low score failed: ${delLowErr.message}`);
     }
 
-    const deletedCount = deleted?.length ?? 0;
-    const survivors = scores.filter((s) => s.s >= SCORE_THRESHOLD).length;
+    // DELETE 2: profili senza score (insufficient + eventuali bug)
+    const { data: deletedNull, error: delNullErr } = await supabase
+      .from("search_results")
+      .delete()
+      .eq("search_id", searchId)
+      .is("match_score", null)
+      .select("id");
+
+    if (delNullErr) {
+      console.error(`[score] DELETE null score failed: ${delNullErr.message}`);
+    }
+
+    const deletedLowCount = deletedLowScore?.length ?? 0;
+    const deletedNullCount = deletedNull?.length ?? 0;
+    const totalDeleted = deletedLowCount + deletedNullCount;
 
     console.log(
-      `[score] eliminati ${deletedCount} profili (insufficient + score < ${SCORE_THRESHOLD}), ` +
-      `sopravvissuti ${survivors}/${scores.length} scorati`,
+      `[score] DELETE: low_score=${deletedLowCount} (soglia ${SCORE_THRESHOLD}), ` +
+      `null_score=${deletedNullCount}, totale_eliminati=${totalDeleted}`,
     );
 
-    // topMatches calcolato sui sopravvissuti (>= 50)
+    if (deletedLowScore && deletedLowScore.length > 0) {
+      const scores = deletedLowScore.map((r) => r.match_score).sort((a, b) => b - a);
+      console.log(`[score] score dei profili eliminati: ${scores.join(", ")}`);
+    }
+
+    const survivors = scores.filter((s) => s.s >= SCORE_THRESHOLD).length;
+
     const topMatches = [...scores]
       .filter((s) => s.s >= SCORE_THRESHOLD)
       .sort((a, b) => b.s - a.s)
@@ -288,7 +340,9 @@ Return the JSON scoring array for all ${profileInput.length} profiles. Remember:
       JSON.stringify({
         scored: scores.length,
         survivors,
-        deleted: deletedCount,
+        deleted: totalDeleted,
+        deletedLow: deletedLowCount,
+        deletedNull: deletedNullCount,
         searchId,
         topMatches,
       }),
