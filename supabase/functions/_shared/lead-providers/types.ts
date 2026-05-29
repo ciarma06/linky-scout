@@ -6,6 +6,36 @@ export type SearchFilters = {
   industry?: string[];
   language?: string;
   count?: number;
+  searchMode?: "profile" | "behavioral";
+  postKeyword?: string;
+};
+
+/** Filtri per la ricerca dei post (motore comportamentale). */
+export type PostSearchFilters = {
+  keyword: string;
+  authorJobTitle?: string;
+  authorIndustry?: string;
+  datePosted?: "past-24h" | "past-week" | "past-month" | "past-year";
+  sortBy?: "relevance" | "date_posted";
+  start?: number;
+};
+
+/** Un post restituito da search/posts, con autore. */
+export type PostSearchResult = {
+  postText: string;
+  author: {
+    urn: string;
+    url: string;
+    fullName: string;
+    headline: string;
+  };
+};
+
+/** Risposta paginata di search/posts. */
+export type PostSearchResponse = {
+  posts: PostSearchResult[];
+  total: number;
+  hasMore: boolean;
 };
 
 /** Minimal profile data returned by a search. */
@@ -45,6 +75,9 @@ export type Post = {
 export interface LeadDataProvider {
   /** Search profiles by keyword, title, location, industry, etc. */
   searchProfiles(filters: SearchFilters): Promise<ProfileBasic[]>;
+
+  /** Cerca post per contenuto/keyword (motore comportamentale). */
+  searchPosts(filters: PostSearchFilters): Promise<PostSearchResponse>;
 
   /** Return follower count and other overview metrics for a profile public username. */
   getProfileOverview(username: string): Promise<ProfileOverview>;

@@ -1,6 +1,12 @@
+// supabase/functions/_shared/lead-providers/linkdapi.ts
+
+import { createClient, SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { acquireLinkdApiToken } from "../rate-limiter.ts";
 import type {
   LeadDataProvider,
   Post,
+  PostSearchFilters,
+  PostSearchResponse,
   ProfileBasic,
   ProfileDetails,
   ProfileOverview,
@@ -12,28 +18,31 @@ const DEFAULT_BASE_URL = "https://linkdapi.com";
 export class LinkdAPIProvider implements LeadDataProvider {
   readonly #apiKey: string;
   readonly #baseUrl: string;
+  readonly #supabase: SupabaseClient;
 
   constructor(apiKey: string, baseUrl: string = DEFAULT_BASE_URL) {
     this.#apiKey = apiKey;
     this.#baseUrl = baseUrl.replace(/\/$/, "");
+    // Client interno per rate limiting (service role)
+    this.#supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
   }
 
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
-
   /**
-   * Perform an authenticated GET request and return the unwrapped `data`
-   * payload from the LinkdAPI response envelope
-   * (`{ success, statusCode, message, data }`).
-   * Throws a descriptive error for non-2xx responses or unsuccessful payloads.
+   * Authenticated GET. Acquisisce un token dal rate limiter PRIMA della fetch.
+   * Se il bucket è vuoto, blocca finché un token non si libera (max 90s).
    */
   async #request<T>(
     endpoint: string,
     params: Record<string, string | number> = {},
+    label?: string,
   ): Promise<T> {
-    const url = new URL(`${this.#baseUrl}${endpoint}`);
+    // RATE LIMITING: blocca qui se necessario
+    await acquireLinkdApiToken(this.#supabase, label ?? endpoint);
 
+    const url = new URL(`${this.#baseUrl}${endpoint}`);
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== null && value !== "") {
         url.searchParams.set(key, String(value));
@@ -70,34 +79,15 @@ export class LinkdAPIProvider implements LeadDataProvider {
     return json.data;
   }
 
-  // ---------------------------------------------------------------------------
-  // LeadDataProvider implementation
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Search LinkedIn profiles using keyword, title, geo, industry and language
-   * filters.  Returns a lightweight list of matching profiles.
-   */
   async searchProfiles(filters: SearchFilters): Promise<ProfileBasic[]> {
     type RawPerson = {
-      urn: string;
-      profileID: string;
-      url: string;
-      firstName: string;
-      lastName: string;
-      fullName: string;
-      headline: string;
-      location: string;
-      profilePictureURL: string;
-      premium: boolean;
+      urn: string; profileID: string; url: string;
+      firstName: string; lastName: string; fullName: string;
+      headline: string; location: string;
+      profilePictureURL: string; premium: boolean;
     };
-
     type RawResponse = {
-      people: RawPerson[];
-      total: number;
-      start: number;
-      count: number;
-      hasMore: boolean;
+      people: RawPerson[]; total: number; start: number; count: number; hasMore: boolean;
     };
 
     const params: Record<string, string | number> = {};
@@ -111,58 +101,97 @@ export class LinkdAPIProvider implements LeadDataProvider {
     const data = await this.#request<RawResponse>(
       "/api/v1/search/people",
       params,
+      "search/people",
     );
 
     return (data.people ?? []).map((p) => ({
-      urn: p.urn,
-      url: p.url,
-      fullName: p.fullName,
-      headline: p.headline,
-      location: p.location,
+      urn: p.urn, url: p.url, fullName: p.fullName,
+      headline: p.headline, location: p.location,
     }));
   }
 
   /**
-   * Fetch follower count and other overview metrics for the given public
-   * username (i.e. the slug after `/in/` in a LinkedIn profile URL).
+   * Cerca post per keyword/contenuto. Usato dal motore comportamentale.
+   * Restituisce post con autore, paginati (10 per pagina).
    */
+  async searchPosts(filters: PostSearchFilters): Promise<PostSearchResponse> {
+    type RawAuthor = {
+      name: string;
+      headline: string;
+      urn: string;
+      id: string;
+      url: string;
+      profilePictureURL: string;
+    };
+    type RawPost = {
+      urn: string;
+      postID: string;
+      postURL: string;
+      text: string;
+      author: RawAuthor;
+      postedAt: unknown;
+      engagements: unknown;
+      mediaContent: unknown[];
+    };
+    type RawResponse = {
+      posts: RawPost[];
+      total: number;
+      start: number;
+      count: number;
+      hasMore: boolean;
+    };
+
+    const params: Record<string, string | number> = {
+      keyword: filters.keyword,
+    };
+    if (filters.authorJobTitle) params["authorJobTitle"] = filters.authorJobTitle;
+    if (filters.authorIndustry) params["authorIndustry"] = filters.authorIndustry;
+    if (filters.datePosted) params["datePosted"] = filters.datePosted;
+    if (filters.sortBy) params["sortBy"] = filters.sortBy;
+    if (filters.start !== undefined) params["start"] = filters.start;
+
+    const data = await this.#request<RawResponse>(
+      "/api/v1/search/posts",
+      params,
+      "search/posts",
+    );
+
+    return {
+      posts: (data.posts ?? []).map((p) => ({
+        postText: p.text ?? "",
+        author: {
+          urn: p.author?.urn ?? "",
+          url: p.author?.url ?? "",
+          fullName: p.author?.name ?? "",
+          headline: p.author?.headline ?? "",
+        },
+      })),
+      total: data.total ?? 0,
+      hasMore: data.hasMore ?? false,
+    };
+  }
+
   async getProfileOverview(username: string): Promise<ProfileOverview> {
     type RawOverview = {
-      firstName: string;
-      lastName: string;
-      fullName: string;
-      headline: string;
-      publicIdentifier: string;
-      followerCount: number;
-      connectionsCount: number;
-      urn: string;
+      firstName: string; lastName: string; fullName: string;
+      headline: string; publicIdentifier: string;
+      followerCount: number; connectionsCount: number; urn: string;
     };
 
     const data = await this.#request<RawOverview>(
       "/api/v1/profile/overview",
       { username },
+      "profile/overview",
     );
 
-    return {
-      urn: data.urn,
-      followerCount: data.followerCount,
-    };
+    return { urn: data.urn, followerCount: data.followerCount };
   }
 
-  /**
-   * Fetch bio and work-history positions for the given profile URN.
-   */
   async getProfileDetails(urn: string): Promise<ProfileDetails> {
     type RawPosition = {
-      jobTitle: string;
-      company: string;
-      location: string;
-      duration: string;
-      companyLink: string;
-      companyId: string;
-      jobDescription: string;
+      jobTitle: string; company: string; location: string;
+      duration: string; companyLink: string; companyId: string; jobDescription: string;
     };
-
     type RawDetails = {
       about: string;
       featuredPosts: Array<{ postLink: string; postText: string }>;
@@ -174,46 +203,34 @@ export class LinkdAPIProvider implements LeadDataProvider {
     const data = await this.#request<RawDetails>(
       "/api/v1/profile/details",
       { urn },
+      "profile/details",
     );
 
     return {
       urn,
       bio: data.about ?? "",
       positions: (data.positions ?? []).map((pos) => ({
-        jobTitle: pos.jobTitle,
-        company: pos.company,
-        duration: pos.duration,
+        jobTitle: pos.jobTitle, company: pos.company, duration: pos.duration,
       })),
     };
   }
 
-  /**
-   * Fetch the most recent posts published by the profile with the given URN.
-   */
   async getRecentPosts(urn: string): Promise<Post[]> {
     type RawPost = {
-      text: string;
-      url: string;
-      urn: string;
-      author: unknown;
-      postedAt: string;
-      edited: boolean;
-      engagements: unknown;
-      mediaContent: unknown[];
-      resharedPostContent: unknown;
+      text: string; url: string; urn: string;
+      author: unknown; postedAt: string; edited: boolean;
+      engagements: unknown; mediaContent: unknown[]; resharedPostContent: unknown;
     };
-
     type RawResponse = { posts: RawPost[] };
 
     const data = await this.#request<RawResponse>(
       "/api/v1/posts/all",
       { urn },
+      "posts/all",
     );
 
     return (data.posts ?? []).map((p) => ({
-      text: p.text,
-      postedAt: p.postedAt,
-      url: p.url,
+      text: p.text, postedAt: p.postedAt, url: p.url,
     }));
   }
 }

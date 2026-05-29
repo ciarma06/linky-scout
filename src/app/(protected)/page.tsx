@@ -18,6 +18,14 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { BuyCreditsModal } from "@/components/buy-credits-modal";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { InsufficientCreditsDialog } from "@/components/insufficient-credits-dialog";
 import { SearchResultsTable } from "@/components/search-results-table";
 import { useAuth } from "@/lib/auth-context";
@@ -96,7 +104,10 @@ function NewSearchView() {
     balance: number;
   }>({ open: false, balance: 0 });
   const [buyCreditsOpen, setBuyCreditsOpen] = useState(false);
+  const [tipsOpen, setTipsOpen] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const tipsShownRef = useRef(false);
+  const pendingSubmitRef = useRef(false);
 
   const clearPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -252,6 +263,17 @@ function NewSearchView() {
       return;
     }
 
+    if (!tipsShownRef.current) {
+      tipsShownRef.current = true;
+      pendingSubmitRef.current = true;
+      setTipsOpen(true);
+      return;
+    }
+
+    await doSubmit(trimmed);
+  }
+
+  async function doSubmit(trimmed: string) {
     clearPolling();
     setSubmitting(true);
     setActiveJobId(null);
@@ -268,9 +290,9 @@ function NewSearchView() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${user.jwt}`,
+          Authorization: `Bearer ${user!.jwt}`,
         },
-        body: JSON.stringify({ icpPrompt: trimmed, userEmail: user.email }),
+        body: JSON.stringify({ icpPrompt: trimmed, userEmail: user!.email }),
       });
 
       const data = (await res.json()) as StartSearchResponse & {
@@ -282,7 +304,6 @@ function NewSearchView() {
         const balance = typeof data.balance === "number" ? data.balance : 0;
         setCreditsDialog({ open: true, balance });
         setUi(INITIAL_STATE);
-        // Refresh credits in the sidebar so the new balance is reflected.
         void refreshCredits();
         return;
       }
@@ -291,8 +312,6 @@ function NewSearchView() {
         throw new Error(data.error ?? `Request failed (${res.status})`);
       }
 
-      // Every successful start-search call has debited credits — refresh the
-      // sidebar balance so the user sees the updated total.
       void refreshCredits();
 
       if (data.cached && data.results) {
@@ -310,7 +329,7 @@ function NewSearchView() {
         setActiveJobId(data.jobId);
         startPolling(data.jobId);
         toast.info(
-          "⏱ Estimated time: 2–4 minutes. We'll notify you when results are ready.",
+          "⏱ Estimated time: 4–8 minutes. We'll notify you when results are ready.",
           { duration: 8000 },
         );
       } else {
@@ -457,6 +476,21 @@ function NewSearchView() {
         />
       )}
 
+      <SearchTipsDialog
+        open={tipsOpen}
+        onOpenChange={(open) => {
+          setTipsOpen(open);
+          if (!open && pendingSubmitRef.current) {
+            pendingSubmitRef.current = false;
+            tipsShownRef.current = false;
+          }
+        }}
+        onConfirm={() => {
+          setTipsOpen(false);
+          pendingSubmitRef.current = false;
+          void doSubmit(prompt.trim());
+        }}
+      />
       <InsufficientCreditsDialog
         open={creditsDialog.open}
         onOpenChange={(open) =>
@@ -470,5 +504,55 @@ function NewSearchView() {
         onOpenChange={setBuyCreditsOpen}
       />
     </div>
+  );
+}
+
+function SearchTipsDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Get better results</DialogTitle>
+          <DialogDescription>
+            LinkyScout uses two search engines depending on how you describe your ICP.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 text-sm">
+          <div className="flex flex-col gap-2">
+            <p className="font-medium text-foreground">Be explicit about behavior</p>
+            <p className="text-muted-foreground">
+              Say whether your ICP <span className="font-medium text-foreground">actively expresses</span> something
+              (posts, complains, shares) or <span className="font-medium text-foreground">passively needs</span> something.
+              This determines which engine runs and directly affects result quality.
+            </p>
+          </div>
+          <div className="rounded-xl bg-muted/60 p-4 flex flex-col gap-2 text-xs text-muted-foreground">
+            <p><span className="font-medium text-foreground">✓ Behavioral:</span> &quot;SaaS founders posting about pipeline problems&quot; → searches post content</p>
+            <p><span className="font-medium text-foreground">✓ Profile:</span> &quot;B2B SaaS founder in the US, &lt;10k followers&quot; → searches profiles</p>
+            <p><span className="font-medium text-[#f59e0b]">✗ Vague:</span> &quot;founder doing outreach&quot; → treated as profile search, may miss behavioral signals</p>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Include role, geography, and follower range when possible — they significantly improve precision.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            onClick={onConfirm}
+            className="h-10 w-full rounded-xl bg-[#6d47f5] text-white hover:bg-[#6d47f5]/90 sm:w-auto"
+          >
+            Got it, search
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

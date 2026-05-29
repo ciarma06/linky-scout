@@ -75,37 +75,121 @@ async function stageStart(jobId: string, icpPrompt: string) {
   });
 }
 
-async function stageSearch(jobId: string, searchId: string, job: Record<string, unknown>) {
-  await updateJob(jobId, { progress: 15, current_stage: "searching" });
+/**
+ * Stage SEARCH con routing tra i due motori:
+ * - searchMode "behavioral" + postKeyword valido → stage1-behavioral (search/posts)
+ * - altrimenti → stage1-search (search/people, motore standard)
+ * Entrambi sono chunked self-loop: ritornano { done, stillPending }.
+ */
+async function stageSearch(
+  jobId: string,
+  searchId: string,
+  job: Record<string, unknown>,
+) {
+  await updateJob(jobId, { progress: 10, current_stage: "searching" });
 
-  const filters = job.parsed_filters;
-  if (!filters) throw new Error("parsed_filters mancanti nel job — stage 'start' non completato?");
+  const filters = job.parsed_filters as
+    | (Record<string, unknown> & { searchMode?: string; postKeyword?: string })
+    | null;
+  if (!filters)
+    throw new Error("parsed_filters mancanti — stage 'start' non completato?");
 
-  await callFunction("stage1-search", { searchId, filters });
+  const mode = filters.searchMode ?? "profile";
+  const hasKeyword =
+    typeof filters.postKeyword === "string" &&
+    filters.postKeyword.trim().length > 0;
+  const useBehavioral = mode === "behavioral" && hasKeyword;
+  const fnName = useBehavioral ? "stage1-behavioral" : "stage1-search";
 
-  await updateJob(jobId, {
-    progress: 40,
-    current_stage: "enrich",
-    next_stage: "enrich",
-  });
+  if (mode === "behavioral" && !hasKeyword) {
+    console.log(
+      `[orchestrator] WARNING: searchMode=behavioral ma postKeyword vuoto → fallback a stage1-search`,
+    );
+  }
+
+  const response = await callFunction(fnName, { searchId, filters });
+  const done = response.done === true;
+
+  if (done) {
+    await updateJob(jobId, {
+      progress: 38,
+      current_stage: "enrich",
+      next_stage: "enrich",
+    });
+  } else {
+    const { count: totalInserted } = await supabase
+      .from("search_results")
+      .select("id", { count: "exact", head: true })
+      .eq("search_id", searchId);
+
+    const { count: stillPending } = await supabase
+      .from("search_results")
+      .select("id", { count: "exact", head: true })
+      .eq("search_id", searchId)
+      .eq("follower_count", -1);
+
+    const total = totalInserted ?? 1;
+    const pending = stillPending ?? 0;
+    const done_ratio = Math.max(0, (total - pending) / total);
+    const progress = Math.round(12 + done_ratio * 23);
+
+    await updateJob(jobId, {
+      progress,
+      current_stage: "searching",
+      next_stage: "search",
+    });
+  }
 }
 
 async function stageEnrich(jobId: string, searchId: string) {
-  await updateJob(jobId, { progress: 50, current_stage: "enriching" });
+  await updateJob(jobId, { progress: 40, current_stage: "enriching" });
 
-  await callFunction("stage2-enrich", { searchId });
+  const response = await callFunction("stage2-enrich", { searchId });
+  const done = response.done === true;
 
-  await updateJob(jobId, {
-    progress: 70,
-    current_stage: "score",
-    next_stage: "score",
-  });
+  if (done) {
+    await updateJob(jobId, {
+      progress: 72,
+      current_stage: "score",
+      next_stage: "score",
+    });
+  } else {
+    const { count: totalCandidates } = await supabase
+      .from("search_results")
+      .select("id", { count: "exact", head: true })
+      .eq("search_id", searchId);
+
+    const { count: stillPending } = await supabase
+      .from("search_results")
+      .select("id", { count: "exact", head: true })
+      .eq("search_id", searchId)
+      .is("bio", null);
+
+    const total = totalCandidates ?? 1;
+    const pending = stillPending ?? 0;
+    const done_ratio = Math.max(0, (total - pending) / total);
+    const progress = Math.round(42 + done_ratio * 28);
+
+    await updateJob(jobId, {
+      progress,
+      current_stage: "enriching",
+      next_stage: "enrich",
+    });
+  }
 }
 
-async function stageScore(jobId: string, searchId: string, icpPrompt: string) {
+async function stageScore(
+  jobId: string,
+  searchId: string,
+  icpPrompt: string,
+  job: Record<string, unknown>,
+) {
   await updateJob(jobId, { progress: 80, current_stage: "scoring" });
 
-  await callFunction("score-profiles", { searchId, icpPrompt });
+  const filters = job.parsed_filters as Record<string, unknown> | null;
+  const behavioralIntent = (filters?.behavioralIntent as string) ?? "expresses";
+
+  await callFunction("score-profiles", { searchId, icpPrompt, behavioralIntent });
 
   await updateJob(jobId, {
     progress: 90,
@@ -172,7 +256,7 @@ Deno.serve(async (req) => {
         await stageEnrich(jobId, searchId);
         break;
       case "score":
-        await stageScore(jobId, searchId, icpPrompt);
+        await stageScore(jobId, searchId, icpPrompt, job);
         break;
       case "finalize":
         await stageFinalize(jobId, searchId, icpPrompt);
