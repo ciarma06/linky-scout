@@ -1,3 +1,5 @@
+//components/score-badge.tsx
+
 import { cn } from "@/lib/utils";
 
 interface ScoreBadgeProps {
@@ -31,7 +33,7 @@ export function ScoreBadge({ score, size = "sm", className }: ScoreBadgeProps) {
   }
 
   let tone: { bg: string; text: string };
-  if (n >= 80) {
+  if (n >= 75) {
     tone = {
       bg: "bg-[#10b981]/15 dark:bg-[#10b981]/20",
       text: "text-[#047857] dark:text-[#34d399]",
