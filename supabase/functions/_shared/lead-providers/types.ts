@@ -25,6 +25,11 @@ export type PostSearchFilters = {
 /** Un post restituito da search/posts, con autore. */
 export type PostSearchResult = {
   postText: string;
+  urn: string;
+  postID: string;
+  engagements: {
+    commentsCount: number;
+  };
   author: {
     urn: string;
     url: string;
@@ -38,6 +43,24 @@ export type PostSearchResponse = {
   posts: PostSearchResult[];
   total: number;
   hasMore: boolean;
+};
+
+/** Commento su un post (posts/comments). */
+export type PostComment = {
+  author: {
+    urn: string;
+    url: string;
+    name: string;
+    headline: string;
+    id: string;
+  };
+  comment: string;
+};
+
+/** Risposta paginata di posts/comments. */
+export type PostCommentsResponse = {
+  comments: PostComment[];
+  cursor: string | null;
 };
 
 /** Minimal profile data returned by a search. */
@@ -80,6 +103,14 @@ export interface LeadDataProvider {
 
   /** Cerca post per contenuto/keyword (motore comportamentale). */
   searchPosts(filters: PostSearchFilters): Promise<PostSearchResponse>;
+
+  /** Commenti su un post (urn = postID numerico, non URN completo). */
+  getPostComments(args: {
+    urn: string;
+    count?: number;
+    sortBy?: "relevance" | "date_posted";
+    start?: number;
+  }): Promise<PostCommentsResponse>;
 
   /** Return follower count and other overview metrics for a profile public username. */
   getProfileOverview(username: string): Promise<ProfileOverview>;

@@ -98,8 +98,6 @@ async function stageSearch(
   const hasKeyword =
     typeof filters.postKeyword === "string" &&
     filters.postKeyword.trim().length > 0;
-  const useBehavioral = mode === "behavioral" && hasKeyword;
-  const fnName = useBehavioral ? "stage1-behavioral" : "stage1-search";
 
   if (mode === "behavioral" && !hasKeyword) {
     console.log(
@@ -107,7 +105,23 @@ async function stageSearch(
     );
   }
 
-  const response = await callFunction(fnName, { searchId, filters });
+  let response;
+  if (mode === "behavioral" && hasKeyword) {
+    const intent = (filters.behavioralIntent as string) ?? "expresses";
+    if (intent === "expresses") {
+      response = await callFunction("stage1-commenters", { searchId, filters });
+    } else if (intent === "offers" || intent === "both") {
+      if (intent === "both") {
+        console.warn(`[process-search-job] behavioralIntent="both" trattato come "offers"`);
+      }
+      response = await callFunction("stage1-behavioral", { searchId, filters });
+    } else {
+      console.warn(`[process-search-job] intent sconosciuto "${intent}", fallback a behavioral`);
+      response = await callFunction("stage1-behavioral", { searchId, filters });
+    }
+  } else {
+    response = await callFunction("stage1-search", { searchId, filters });
+  }
   const done = response.done === true;
 
   if (done) {

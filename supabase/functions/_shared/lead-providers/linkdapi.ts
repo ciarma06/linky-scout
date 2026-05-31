@@ -5,6 +5,7 @@ import { acquireLinkdApiToken } from "../rate-limiter.ts";
 import type {
   LeadDataProvider,
   Post,
+  PostCommentsResponse,
   PostSearchFilters,
   PostSearchResponse,
   ProfileBasic,
@@ -157,17 +158,76 @@ export class LinkdAPIProvider implements LeadDataProvider {
     );
 
     return {
-      posts: (data.posts ?? []).map((p) => ({
-        postText: p.text ?? "",
-        author: {
-          urn: p.author?.urn ?? "",
-          url: p.author?.url ?? "",
-          fullName: p.author?.name ?? "",
-          headline: p.author?.headline ?? "",
-        },
-      })),
+      posts: (data.posts ?? []).map((p) => {
+        const engagements = p.engagements as { commentsCount?: number } | null;
+        return {
+          postText: p.text ?? "",
+          urn: p.urn ?? "",
+          postID: p.postID ?? "",
+          engagements: {
+            commentsCount: engagements?.commentsCount ?? 0,
+          },
+          author: {
+            urn: p.author?.urn ?? "",
+            url: p.author?.url ?? "",
+            fullName: p.author?.name ?? "",
+            headline: p.author?.headline ?? "",
+          },
+        };
+      }),
       total: data.total ?? 0,
       hasMore: data.hasMore ?? false,
+    };
+  }
+
+  /**
+   * Commenti su un post. `urn` deve essere il postID numerico (es. "7461508647924224000").
+   */
+  async getPostComments(args: {
+    urn: string;
+    count?: number;
+    sortBy?: "relevance" | "date_posted";
+    start?: number;
+  }): Promise<PostCommentsResponse> {
+    type RawAuthor = {
+      urn: string;
+      url: string;
+      name: string;
+      headline: string;
+      id: string;
+    };
+    type RawComment = {
+      author: RawAuthor;
+      comment: string;
+    };
+    type RawResponse = {
+      comments: RawComment[];
+      cursor?: string | null;
+    };
+
+    const params: Record<string, string | number> = { urn: args.urn };
+    if (args.count !== undefined) params["count"] = args.count;
+    if (args.sortBy) params["sortBy"] = args.sortBy;
+    if (args.start !== undefined) params["start"] = args.start;
+
+    const data = await this.#request<RawResponse>(
+      "/api/v1/posts/comments",
+      params,
+      "posts/comments",
+    );
+
+    return {
+      comments: (data.comments ?? []).map((c) => ({
+        author: {
+          urn: c.author?.urn ?? "",
+          url: c.author?.url ?? "",
+          name: c.author?.name ?? "",
+          headline: c.author?.headline ?? "",
+          id: c.author?.id ?? "",
+        },
+        comment: c.comment ?? "",
+      })),
+      cursor: data.cursor ?? null,
     };
   }
 

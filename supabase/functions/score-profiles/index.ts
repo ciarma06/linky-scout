@@ -10,7 +10,8 @@ const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
 
 const MIN_BIO_LENGTH = 30;
 const POSTS_PER_PROFILE = 3;
-const POST_TEXT_LIMIT = 300;
+const POST_TEXT_LIMIT = 600;
+const SELLER_CAP_FOR_EXPRESSES = 30;
 
 function isScoreable(p: { bio: string | null; recent_posts: unknown; match_post?: string | null }): boolean {
   const bioLength = (p.bio ?? "").trim().length;
@@ -27,33 +28,53 @@ You will receive a list of profiles and an ICP description. For each profile, ev
 
 # BEHAVIORAL MATCH (field "matchPost")
 Some profiles include a "matchPost" field: a post the person actually wrote that matched the search topic. This is STRONG evidence the person engages with the ICP topic — weight it heavily as a positive signal.
-HOWEVER: matchPost proves TOPIC RELEVANCE, not correct SENTIMENT or role. You must still apply:
-- USER vs SELLER disambiguation (someone posting about "lead quality" might SELL lead-gen services → still cap at 45)
-- The actual ICP intent (e.g. if ICP wants people COMPLAINING about leads, a post PRAISING their lead tool is not a match)
-A profile with a strong, on-sentiment matchPost can reach 85-95. A profile whose matchPost is off-sentiment or from a seller does NOT get the boost.`;
+HOWEVER: matchPost proves TOPIC RELEVANCE, not correct SENTIMENT or role. You must still classify is_selling_solution accurately and reflect ICP intent (e.g. if ICP wants people COMPLAINING about leads, a post PRAISING their lead tool is not a match).
+A profile with a strong, on-sentiment matchPost from someone who is NOT selling can reach 85-95. A seller's matchPost does NOT get a high score — classify is_selling_solution=true and score accordingly.
+
+# SELLER DETECTION (mandatory field is_selling_solution)
+For EVERY profile you MUST set is_selling_solution (boolean) and seller_evidence (string).
+
+Set is_selling_solution=true when the person is promoting, selling, or building a product/service/solution related to the ICP topic — even if they also describe pain points.
+
+Strong seller signals (any one is enough):
+- Launching, founding, or announcing a product: "Yesterday I launched X", "Introducing X", "We're excited to announce", "Just shipped", "Now available"
+- First-person builder/vendor language: "we built", "we created", "our platform/tool", "my agency helps", "I help [audience] with [service]"
+- Agitate-pain-then-pitch pattern: describes a problem in first person, then pivots to "that's why we built X", "Introducing X — the [category] built for [audience]", "the problem we just solved"
+- Consultant/agency/vendor positioning in headline or bio: "I help companies with...", "Lead gen agency", "We specialize in..."
+- Demo, waitlist, beta, pricing, or CTA for their own offering
+
+Set is_selling_solution=false when the person appears to be a practitioner/end-user living the problem without pitching their own solution in bio or posts.
+
+CRITICAL RULE — pain quotes are NOT proof of non-seller:
+A quote that sounds like a complaint or first-person struggle is NOT evidence of is_selling_solution=false if the SAME post (or another post in the profile) follows with a product pitch, launch announcement, or "we built/solved" language. Read the full post and all posts before deciding.
+
+seller_evidence: if is_selling_solution=true, quote the shortest phrase that proves it (from bio, posts, or matchPost). If false, use empty string.`;
 
 const OUTPUT_FORMAT_PROMPT = `# OUTPUT FORMAT
 IMPORTANT: Return ONLY a valid JSON array, no markdown, no backticks, no explanation. Each element must have exactly these fields:
 - index: number (same as input)
 - match_score: number 0-100 (0=no match, 100=perfect match)
 - match_reason: string (1-2 sentences explaining why this profile matches or doesn't match the ICP, be specific and reference actual content from their bio or posts)
-- best_context: string (the single most relevant quote or sentence from their bio or posts to use as an outreach hook. Empty string if no relevant content found)`;
+- best_context: string (the single most relevant quote or sentence from their bio or posts to use as an outreach hook. Empty string if no relevant content found)
+- is_selling_solution: boolean (true if this person sells/offers/builds solutions on the ICP topic — see SELLER DETECTION)
+- seller_evidence: string (short quote proving seller status; empty string if is_selling_solution is false)`;
 
 function buildSellerRule(intent: string): string {
   if (intent === "offers") {
     return `# SELLER RULE FOR THIS SEARCH
 The ICP explicitly targets people who SELL or OFFER solutions on this topic (agencies, consultants, tool builders).
-DO NOT apply the seller cap. People who sell solutions ARE the target.
-Score them normally based on how well their offering matches the ICP.`;
+People who sell solutions ARE the target. Classify is_selling_solution accurately — sellers should typically have is_selling_solution=true.
+Score normally based on how well their offering matches the ICP.`;
   }
   if (intent === "both") {
     return `# SELLER RULE FOR THIS SEARCH
 The ICP targets both people who live the problem AND people who offer solutions.
-Apply no seller cap. Score based on topic relevance only.`;
+Classify is_selling_solution accurately for every profile. Score normally based on topic relevance — both end-users and sellers can be good matches.`;
   }
   return `# SELLER RULE FOR THIS SEARCH
-The ICP targets people who EXPERIENCE or COMPLAIN about the topic (first-person, living the problem).
-People who SELL solutions to this problem are NOT the target — apply the standard seller cap (max 45).`;
+The ICP targets people who EXPERIENCE or COMPLAIN about the topic (first-person, living the problem) — NOT vendors or solution sellers.
+Classify is_selling_solution accurately for every profile. When scoring, evaluate fit as an end-user/practitioner experiencing the problem, not as someone selling to that audience.
+Score normally; seller penalty is applied downstream — your job is accurate is_selling_solution classification and honest match_score.`;
 }
 
 function buildSystemPrompt(behavioralIntent: string): string {
@@ -86,6 +107,8 @@ type ClaudeScore = {
   match_score: number;
   match_reason: string;
   best_context: string;
+  is_selling_solution: boolean;
+  seller_evidence: string;
 };
 
 Deno.serve(async (req) => {
@@ -233,8 +256,19 @@ Return a JSON array with one object per profile. Use the same index values as th
       throw new Error("Claude response is not an array");
     }
 
+    const enforcedScores: ClaudeScore[] = scores.map((score) => {
+      if (behavioralIntent === "expresses" && score.is_selling_solution === true) {
+        const capped = Math.min(score.match_score, SELLER_CAP_FOR_EXPRESSES);
+        console.log(
+          `[score-profiles] seller cap applied: index=${score.index} original=${score.match_score} capped=${capped} evidence="${score.seller_evidence ?? ""}"`,
+        );
+        return { ...score, match_score: capped };
+      }
+      return score;
+    });
+
     await Promise.all(
-      scores.map(async (score) => {
+      enforcedScores.map(async (score) => {
         const candidate = scoreable[score.index];
         if (!candidate) return;
 
@@ -249,7 +283,29 @@ Return a JSON array with one object per profile. Use the same index values as th
       }),
     );
 
-    const topMatches = [...scores]
+    // search_results FK: search_id → searches (not job_id)
+    const { error: deleteLowError } = await supabase
+      .from("search_results")
+      .delete()
+      .eq("search_id", searchId)
+      .lt("match_score", 50);
+
+    if (deleteLowError) {
+      throw new Error(`Failed to delete low scores: ${deleteLowError.message}`);
+    }
+
+    const { error: deleteNullError } = await supabase
+      .from("search_results")
+      .delete()
+      .eq("search_id", searchId)
+      .is("match_score", null);
+
+    if (deleteNullError) {
+      throw new Error(`Failed to delete unscored results: ${deleteNullError.message}`);
+    }
+
+    const topMatches = [...enforcedScores]
+      .filter((s) => s.match_score >= 50)
       .sort((a, b) => b.match_score - a.match_score)
       .slice(0, 3)
       .map((s) => ({
@@ -260,7 +316,7 @@ Return a JSON array with one object per profile. Use the same index values as th
 
     return new Response(
       JSON.stringify({
-        scored: scores.length,
+        scored: enforcedScores.length,
         searchId,
         topMatches,
       }),
