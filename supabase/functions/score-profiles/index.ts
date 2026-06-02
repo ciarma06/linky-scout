@@ -31,6 +31,22 @@ Some profiles include a "matchPost" field: a post the person actually wrote that
 HOWEVER: matchPost proves TOPIC RELEVANCE, not correct SENTIMENT or role. You must still classify is_selling_solution accurately and reflect ICP intent (e.g. if ICP wants people COMPLAINING about leads, a post PRAISING their lead tool is not a match).
 A profile with a strong, on-sentiment matchPost from someone who is NOT selling can reach 85-95. A seller's matchPost does NOT get a high score — classify is_selling_solution=true and score accordingly.
 
+# DUAL-SIGNAL SCORING (behavioral commenter searches)
+When a profile comes from a comment (matchPost is a comment under someone else's post), evaluate TWO independent signals:
+
+1. COMMENT SIGNAL — does the comment text itself express the ICP intent?
+   A comment like "we're drowning in unqualified leads" is a STRONG comment signal. A short/generic comment like "Interested", "Send", "PRODUCT", "+1", "Great post" is a WEAK comment signal — BUT a weak comment is NOT disqualifying: commenting on a topic-relevant post is itself a behavioral signal of category interest.
+
+2. BIO SIGNAL — do the headline and bio match the ICP target (role, industry, seniority, context)?
+
+SCORING RULE: take the STRONGER of the two signals as the primary driver, do NOT average them down.
+- Strong comment signal (on-sentiment, on-role) → 70-95
+- Weak comment + strong on-ICP bio → 55-75 (the person showed category interest by commenting AND fits the profile — this is a qualified lead even without an articulate complaint)
+- Weak comment + weak/adjacent bio → 35-50
+- No usable signal in either → below 35
+
+This rule does NOT override SELLER DETECTION: a seller still gets capped regardless of how strong their bio signal is.
+
 # SELLER DETECTION (mandatory field is_selling_solution)
 For EVERY profile you MUST set is_selling_solution (boolean) and seller_evidence (string).
 
@@ -57,7 +73,9 @@ IMPORTANT: Return ONLY a valid JSON array, no markdown, no backticks, no explana
 - match_reason: string (1-2 sentences explaining why this profile matches or doesn't match the ICP, be specific and reference actual content from their bio or posts)
 - best_context: string (the single most relevant quote or sentence from their bio or posts to use as an outreach hook. Empty string if no relevant content found)
 - is_selling_solution: boolean (true if this person sells/offers/builds solutions on the ICP topic — see SELLER DETECTION)
-- seller_evidence: string (short quote proving seller status; empty string if is_selling_solution is false)`;
+- seller_evidence: string (short quote proving seller status; empty string if is_selling_solution is false)
+- comment_signal: string ("strong" if the matchPost/comment itself clearly expresses the ICP intent; "weak" if it hints at interest but is short or generic like "interested"/"send"/"+1"; "none" if no usable signal in the comment)
+- bio_signal: string ("strong" if headline+bio clearly match the ICP target role and context; "weak" if partial/adjacent match; "none" if unrelated)`;
 
 function buildSellerRule(intent: string): string {
   if (intent === "offers") {
@@ -109,6 +127,8 @@ type ClaudeScore = {
   best_context: string;
   is_selling_solution: boolean;
   seller_evidence: string;
+  comment_signal: "strong" | "weak" | "none";
+  bio_signal: "strong" | "weak" | "none";
 };
 
 Deno.serve(async (req) => {
@@ -143,7 +163,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const DELETE_THRESHOLD = behavioralIntent === "expresses" ? 40 : 50;
+    const DELETE_THRESHOLD = behavioralIntent === "expresses" ? 30 : 50;
 
     const { data: candidates, error } = await supabase
       .from("search_results")
@@ -266,6 +286,10 @@ Return a JSON array with one object per profile. Use the same index values as th
         );
         return { ...score, match_score: capped };
       }
+      console.log(
+        `[score-profiles] signals: index=${score.index} score=${score.match_score} ` +
+        `comment=${score.comment_signal} bio=${score.bio_signal}`,
+      );
       return score;
     });
 

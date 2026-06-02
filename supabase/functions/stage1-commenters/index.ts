@@ -61,6 +61,51 @@ function buildHeadlineSellerCheck(postKeyword: string) {
   };
 }
 
+const STANDARD_DECISION_MAKER_ROLES = [
+  "founder",
+  "co-founder",
+  "cofounder",
+  "ceo",
+  "owner",
+  "president",
+  "managing director",
+  "md",
+  "partner",
+  "chief",
+];
+
+const EXCLUDED_OPERATIONAL_ROLES = [
+  "assistant",
+  "intern",
+  "trainee",
+  "student",
+  "coordinator",
+  "apprentice",
+];
+
+function buildRoleMatcher(title: string) {
+  const titleRole = title?.trim().toLowerCase();
+  const targetRoles = [
+    ...new Set([
+      ...(titleRole ? [titleRole] : []),
+      ...STANDARD_DECISION_MAKER_ROLES,
+    ]),
+  ];
+
+  const targetPatterns = targetRoles.map(
+    (role) => new RegExp(`\\b${escapeRegex(role)}\\b`, "i"),
+  );
+  const excludedPatterns = EXCLUDED_OPERATIONAL_ROLES.map(
+    (role) => new RegExp(`\\b${escapeRegex(role)}\\b`, "i"),
+  );
+
+  return (headline: string): boolean => {
+    if (!headline?.trim()) return false;
+    if (excludedPatterns.some((pattern) => pattern.test(headline))) return false;
+    return targetPatterns.some((pattern) => pattern.test(headline));
+  };
+}
+
 function formatRelativeTime(timestampMs: number): string {
   const now = Date.now();
   const diffMs = now - timestampMs;
@@ -129,8 +174,9 @@ Deno.serve(async (req) => {
         string,
         { url: string; fullName: string; headline: string; matchComment: string; createdAt: number }
       >();
-      const dropped = { commentTooShort: 0, commentSeller: 0, headlineSeller: 0 };
+      const dropped = { commentTooShort: 0, commentSeller: 0, headlineSeller: 0, roleMismatch: 0 };
       const isHeadlineSeller = buildHeadlineSellerCheck(postKeyword);
+      const matchesRole = buildRoleMatcher(title ?? "");
 
       for (const kw of keywordsToTry) {
         if (candidates.size >= TARGET_CANDIDATES) break;
@@ -146,8 +192,9 @@ Deno.serve(async (req) => {
 
         while (pages < MAX_POSTS_PAGES) {
           // NB: authorJobTitle non passato di proposito — vogliamo post con
-          // alta discussione, indipendentemente dal ruolo dell'autore. Il filtro
-          // sul ruolo del commentatore è applicato a valle da score-profiles.
+          // alta discussione, indipendentemente dal ruolo dell'autore del post.
+          // Il filtro sul ruolo del commentatore è applicato qui (headline gratis
+          // da posts/comments), prima dell'enrichment a crediti.
           const resp = await provider.searchPosts({
             keyword: kw,
             datePosted: "past-year",
@@ -221,6 +268,10 @@ Deno.serve(async (req) => {
                 dropped.headlineSeller += 1;
                 continue;
               }
+              if (!matchesRole(author.headline)) {
+                dropped.roleMismatch += 1;
+                continue;
+              }
               if (!author.urn) continue;
 
               const existing = candidates.get(author.urn);
@@ -273,7 +324,8 @@ Deno.serve(async (req) => {
 
       console.log(
         `[stage1-commenters] inseriti ${rows.length} candidati. ` +
-        `Filtri gratis: A ${dropped.commentTooShort} too-short, B ${dropped.commentSeller} seller-pitch, C ${dropped.headlineSeller} seller-headline`,
+        `Filtri gratis: A ${dropped.commentTooShort} too-short, B ${dropped.commentSeller} seller-pitch, ` +
+        `C ${dropped.headlineSeller} seller-headline, D ${dropped.roleMismatch} role-mismatch`,
       );
       console.log(`[stage1-commenters] CREDITI questo chunk: ${creditsUsed}`);
 
