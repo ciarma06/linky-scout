@@ -26,6 +26,13 @@ Convert the ICP description below into LinkedIn search filters. Output a valid J
 - behavioralCriteria (string array): behavioral signals (max 4 items, each max 5 words) that score-profiles will look for in bio/posts. Empty array if none mentioned.
 - searchMode (string): "behavioral" if the ICP describes something the person ACTIVELY EXPRESSES IN POSTS (complaints, opinions, announcements, stories they'd write about — e.g. "founders complaining about lead quality", "CEOs posting about hiring struggles", "founders sharing revenue numbers"). "profile" otherwise (role, industry, static attributes, or silent actions that don't necessarily get posted — e.g. "SaaS founder in UK", "founder who does cold outreach"). When unsure, use "profile" (the safe default).
 - postKeyword (string): ONLY if searchMode is "behavioral". 1-3 words that would literally appear in the kind of post you're looking for (e.g. ICP "founders complaining about lead quality" → "lead quality"). Empty string if searchMode is "profile".
+- postKeywordAlternatives (string array): ONLY if searchMode is "behavioral".
+  3-4 alternative search phrases that would surface posts generating
+  DISCUSSION among people who LIVE the problem (not sellers). Mix paraphrases
+  of the topic with emotional/symptom language that a sufferer would use in
+  a comment but a seller would avoid. Empty array if searchMode is "profile".
+  Example for "founders complaining about lead quality":
+  ["unqualified leads", "leads not converting", "wasted ad spend", "pipeline quality"]
 - behavioralIntent (string): ONLY if searchMode is "behavioral". Who you want among people posting about the topic:
   "expresses" = people who LIVE the problem (complaints, frustrations, first-person stories — "struggling with X", "frustrated by X", "can't figure out X")
   "offers" = people who SELL solutions to the problem (agencies, consultants, tool builders — "I help companies with X", "we solve X")
@@ -112,7 +119,7 @@ KEYWORD TRANSLATION RULES (use these when applicable):
 
 <example>
 <input>Founders complaining about the quality of their leads</input>
-<output><filters>{"keyword":"founder","title":"founder","geoUrns":["103644278","101165590","101174742","101452733","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":null,"behavioralCriteria":["complains about lead quality","frustrated with unqualified leads"],"searchMode":"behavioral","postKeyword":"lead quality"}</filters></output>
+<output><filters>{"keyword":"founder","title":"founder","geoUrns":["103644278","101165590","101174742","101452733","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":null,"behavioralCriteria":["complains about lead quality","frustrated with unqualified leads"],"searchMode":"behavioral","postKeyword":"lead quality","postKeywordAlternatives":["unqualified leads","leads not converting","wasted ad spend","pipeline quality"]}</filters></output>
 </example>
 
 <example>
@@ -122,7 +129,7 @@ KEYWORD TRANSLATION RULES (use these when applicable):
 
 <example>
 <input>Agency founders who help B2B companies with cold outreach</input>
-<output><filters>{"keyword":"agency","title":"founder","geoUrns":["103644278","101165590","101174742","101452733","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":null,"behavioralCriteria":["runs outreach agency","helps B2B companies with cold outreach"],"searchMode":"behavioral","postKeyword":"cold outreach","behavioralIntent":"offers"}</filters></output>
+<output><filters>{"keyword":"agency","title":"founder","geoUrns":["103644278","101165590","101174742","101452733","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":null,"behavioralCriteria":["runs outreach agency","helps B2B companies with cold outreach"],"searchMode":"behavioral","postKeyword":"cold outreach","postKeywordAlternatives":["cold email","outbound sales","booking meetings","reply rates"],"behavioralIntent":"offers"}</filters></output>
 </example>
 </examples>
 
@@ -134,6 +141,10 @@ KEYWORD TRANSLATION RULES (use these when applicable):
 - Keyword translation rules in <mappings> take priority over literal user words.
 - The KEY TEST for searchMode: "Would this person have likely written a POST about this?" If yes (it's an expressed opinion/complaint/story) → "behavioral". If it's just a role, sector, or a silent action → "profile". Default to "profile" when uncertain.
 - If searchMode is "behavioral", postKeyword MUST be non-empty and must be words that appear in the post content itself, not the ICP description.
+- postKeywordAlternatives must be DISTINCT from postKeyword and from each
+  other. Prefer phrases that attract first-person frustration in comments
+  (symptoms, outcomes, emotional language) over generic topic labels.
+  Each 1-4 words. Empty array if searchMode is "profile".
 - For behavioralIntent: look for first-person struggle language → "expresses". Service/solution language → "offers". If mixed or unclear → "both". Irrelevant if searchMode is "profile".
 </rules>
 

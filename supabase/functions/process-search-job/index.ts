@@ -33,7 +33,10 @@ async function callFunction(name: string, body: Record<string, unknown>) {
 }
 
 async function updateJob(jobId: string, updates: Record<string, unknown>) {
-  await supabase.from("search_jobs").update(updates).eq("id", jobId);
+  await supabase.from("search_jobs").update({
+    ...updates,
+    last_progress_at: new Date().toISOString(),
+  }).eq("id", jobId);
 }
 
 /**
@@ -245,32 +248,35 @@ Deno.serve(async (req) => {
     );
   }
 
+  let job: { user_id: string; search_id: string } | null = null;
+
   try {
-    const { data: job } = await supabase
+    const { data: fetchedJob } = await supabase
       .from("search_jobs")
       .select("*, searches(icp_prompt)")
       .eq("id", jobId)
       .single();
 
-    if (!job) throw new Error("Job not found");
+    if (!fetchedJob) throw new Error("Job not found");
+    job = fetchedJob;
 
-    const icpPrompt = (job.searches as { icp_prompt: string }).icp_prompt;
-    const searchId = job.search_id as string;
+    const icpPrompt = (fetchedJob.searches as { icp_prompt: string }).icp_prompt;
+    const searchId = fetchedJob.search_id as string;
 
-    const currentStage = stage || job.next_stage || "start";
+    const currentStage = stage || fetchedJob.next_stage || "start";
 
     switch (currentStage) {
       case "start":
         await stageStart(jobId, icpPrompt);
         break;
       case "search":
-        await stageSearch(jobId, searchId, job);
+        await stageSearch(jobId, searchId, fetchedJob);
         break;
       case "enrich":
         await stageEnrich(jobId, searchId);
         break;
       case "score":
-        await stageScore(jobId, searchId, icpPrompt, job);
+        await stageScore(jobId, searchId, icpPrompt, fetchedJob);
         break;
       case "finalize":
         await stageFinalize(jobId, searchId, icpPrompt);
@@ -294,6 +300,19 @@ Deno.serve(async (req) => {
       error_message: message,
       next_stage: null,
     });
+    if (job) {
+      try {
+        const { data: refund } = await supabase.rpc("refund_search_credits", {
+          p_email: job.user_id,
+          p_search_id: job.search_id,
+        });
+        if (refund?.[0]?.refunded) {
+          console.log(`[refund] ${refund[0].amount_refunded} crediti rimborsati a ${job.user_id} (job ${jobId} fallito)`);
+        }
+      } catch (e) {
+        console.error(`[refund] errore rimborso job ${jobId}:`, e);
+      }
+    }
     return new Response(
       JSON.stringify({ error: message }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }

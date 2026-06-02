@@ -12,9 +12,10 @@ const supabase = createClient(
 
 const CHUNK_SIZE = 12;
 const MAX_CANDIDATES = 25;
-const MAX_POSTS_PAGES = 2;
+const MAX_POSTS_PAGES = 3;
+const TARGET_CANDIDATES = 20; // stop adattivo: smetti di provare keyword una volta raggiunti
 const POSTS_PER_PAGE = 10;
-const MIN_POST_COMMENTS = 5;
+const MIN_POST_COMMENTS = 2; // sotto 2 il rapporto credito/lead è pessimo
 const COMMENTS_PER_POST = 30;
 const MIN_COMMENT_LENGTH = 40;
 const MATCH_POST_LIMIT = 2000;
@@ -68,6 +69,18 @@ function buildHeadlineSellerCheck(postKeyword: string) {
   };
 }
 
+function formatRelativeTime(timestampMs: number): string {
+  const now = Date.now();
+  const diffMs = now - timestampMs;
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (days < 1) return "today";
+  if (days < 2) return "yesterday";
+  if (days < 14) return `${days} days ago`;
+  if (days < 60) return `${Math.floor(days / 7)} weeks ago`;
+  if (days < 365) return `${Math.floor(days / 30)} months ago`;
+  return `${Math.floor(days / 365)} years ago`;
+}
+
 async function hasAnyResults(searchId: string): Promise<boolean> {
   const { count } = await supabase
     .from("search_results")
@@ -99,6 +112,7 @@ Deno.serve(async (req) => {
 
     const provider = getLeadProvider();
     const { title, postKeyword, maxFollowers } = filters;
+    const postKeywordAlternatives = filters.postKeywordAlternatives ?? [];
 
     if (!postKeyword?.trim()) {
       console.error(`[stage1-commenters] postKeyword vuoto, impossibile procedere`);
@@ -114,109 +128,155 @@ Deno.serve(async (req) => {
     // FASE 1: search/posts → filtra post → getPostComments → insert
     // ===================================================================
     if (isSearchPhase) {
-      const sourcePosts: Array<{ postID: string; commentsCount: number }> = [];
-      let start = 0;
-      let pages = 0;
+      const keywordsToTry = [postKeyword, ...postKeywordAlternatives].filter(Boolean);
+      const keywordsUsed: string[] = [];
       let creditsUsed = 0;
+      let sourcePostsUsed = 0;
 
-      while (pages < MAX_POSTS_PAGES) {
-        const resp = await provider.searchPosts({
-          keyword: postKeyword,
-          authorJobTitle: title,
-          datePosted: "past-month",
-          sortBy: "relevance",
-          start,
-        });
-        creditsUsed += COST_SEARCH_POSTS;
-        pages += 1;
+      const candidates = new Map<
+        string,
+        { url: string; fullName: string; headline: string; matchComment: string; createdAt: number }
+      >();
+      const dropped = { commentNoise: 0, commentSeller: 0, headlineSeller: 0 };
+      const isHeadlineSeller = buildHeadlineSellerCheck(postKeyword);
 
-        for (const post of resp.posts) {
+      for (const kw of keywordsToTry) {
+        if (candidates.size >= TARGET_CANDIDATES) break;
+        keywordsUsed.push(kw);
+
+        const allPostsRaw: Array<{
+          postID: string;
+          urn: string;
+          engagements: { commentsCount: number };
+        }> = [];
+        let start = 0;
+        let pages = 0;
+
+        while (pages < MAX_POSTS_PAGES) {
+          // NB: authorJobTitle non passato di proposito — vogliamo post con
+          // alta discussione, indipendentemente dal ruolo dell'autore. Il filtro
+          // sul ruolo del commentatore è applicato a valle da score-profiles.
+          const resp = await provider.searchPosts({
+            keyword: kw,
+            datePosted: "past-year",
+            sortBy: "relevance",
+            start,
+          });
+          creditsUsed += COST_SEARCH_POSTS;
+          pages += 1;
+          allPostsRaw.push(...resp.posts);
+          if (!resp.hasMore) break;
+          start += POSTS_PER_PAGE;
+        }
+
+        const counts = allPostsRaw
+          .map((p) => p.engagements?.commentsCount ?? 0)
+          .sort((a, b) => b - a);
+        console.log(
+          `[stage1-commenters] keyword "${kw}" raw posts: ${allPostsRaw.length} totali. ` +
+          `commentsCount distribution: max=${counts[0] ?? 0}, ` +
+          `top5=[${counts.slice(0, 5).join(",")}], ` +
+          `>=5: ${counts.filter((n) => n >= 5).length}, ` +
+          `>=2: ${counts.filter((n) => n >= 2).length}, ` +
+          `>=1: ${counts.filter((n) => n >= 1).length}`,
+        );
+
+        const sourcePosts: Array<{ postID: string; urn: string; commentsCount: number }> = [];
+        for (const post of allPostsRaw) {
           if (post.engagements.commentsCount >= MIN_POST_COMMENTS && post.postID) {
             sourcePosts.push({
               postID: post.postID,
+              urn: post.urn,
               commentsCount: post.engagements.commentsCount,
             });
           }
         }
+        sourcePosts.sort((a, b) => b.commentsCount - a.commentsCount);
 
-        if (!resp.hasMore) break;
-        start += POSTS_PER_PAGE;
-      }
+        const beforeSize = candidates.size;
 
-      sourcePosts.sort((a, b) => b.commentsCount - a.commentsCount);
+        for (const sp of sourcePosts) {
+          if (candidates.size >= TARGET_CANDIDATES) break;
+          console.log(
+            `[stage1-commenters] calling getPostComments postID="${sp.postID}" urn="${sp.urn}" commentsCount=${sp.commentsCount}`,
+          );
 
-      console.log(
-        `[stage1-commenters] discovery: ${sourcePosts.length} post sorgente con >=${MIN_POST_COMMENTS} commenti`,
-      );
-
-      const candidates = new Map<
-        string,
-        { url: string; fullName: string; headline: string; matchComment: string }
-      >();
-      const dropped = { commentNoise: 0, commentSeller: 0, headlineSeller: 0 };
-      const isHeadlineSeller = buildHeadlineSellerCheck(postKeyword);
-      let sourcePostsUsed = 0;
-
-      for (const post of sourcePosts) {
-        if (candidates.size >= MAX_CANDIDATES) break;
-
-        const commentsResp = await provider.getPostComments({
-          urn: post.postID,
-          count: COMMENTS_PER_POST,
-          sortBy: "date_posted",
-        });
-        creditsUsed += COST_POST_COMMENTS;
-        sourcePostsUsed += 1;
-
-        for (const item of commentsResp.comments) {
-          if (candidates.size >= MAX_CANDIDATES) break;
-
-          const { author, comment } = item;
-          const text = comment?.trim() ?? "";
-
-          if (text.length < MIN_COMMENT_LENGTH) {
-            dropped.commentNoise += 1;
-            continue;
-          }
-          if (LEAD_MAGNET_PATTERNS.some((pattern) => pattern.test(text))) {
-            dropped.commentNoise += 1;
-            continue;
-          }
-          if (SELLER_IN_COMMENT_PATTERNS.some((pattern) => pattern.test(text))) {
-            dropped.commentSeller += 1;
-            continue;
-          }
-          if (author.id.startsWith("urn:li:company:")) continue;
-          if (isHeadlineSeller(author.headline)) {
-            dropped.headlineSeller += 1;
-            continue;
-          }
-          if (!author.urn) continue;
-
-          const existing = candidates.get(author.urn);
-          if (!existing || text.length > existing.matchComment.length) {
-            candidates.set(author.urn, {
-              url: author.url,
-              fullName: author.name,
-              headline: author.headline,
-              matchComment: text,
+          try {
+            const commentsResp = await provider.getPostComments({
+              urn: sp.postID,
+              count: COMMENTS_PER_POST,
+              sortBy: "date_posted",
             });
+            creditsUsed += COST_POST_COMMENTS;
+            sourcePostsUsed += 1;
+
+            for (const item of commentsResp.comments) {
+              if (candidates.size >= TARGET_CANDIDATES) break;
+
+              const { author, comment } = item;
+              const text = comment?.trim() ?? "";
+
+              if (text.length < MIN_COMMENT_LENGTH) {
+                dropped.commentNoise += 1;
+                continue;
+              }
+              if (LEAD_MAGNET_PATTERNS.some((pattern) => pattern.test(text))) {
+                dropped.commentNoise += 1;
+                continue;
+              }
+              if (SELLER_IN_COMMENT_PATTERNS.some((pattern) => pattern.test(text))) {
+                dropped.commentSeller += 1;
+                continue;
+              }
+              if (author.id.startsWith("urn:li:company:")) continue;
+              if (isHeadlineSeller(author.headline)) {
+                dropped.headlineSeller += 1;
+                continue;
+              }
+              if (!author.urn) continue;
+
+              const existing = candidates.get(author.urn);
+              if (!existing || text.length > existing.matchComment.length) {
+                candidates.set(author.urn, {
+                  url: author.url,
+                  fullName: author.name,
+                  headline: author.headline,
+                  matchComment: text,
+                  createdAt: item.createdAt,
+                });
+              }
+            }
+          } catch (err) {
+            console.warn(
+              `[stage1-commenters] posts/comments fallito per ${sp.postID}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
           }
         }
+
+        const added = candidates.size - beforeSize;
+        console.log(
+          `[stage1-commenters] keyword "${kw}": +${added} nuovi candidati (totale ${candidates.size})`,
+        );
       }
 
-      const rows = [...candidates.entries()].map(([urn, c]) => ({
-        search_id: searchId,
-        linkedin_urn: urn,
-        linkedin_url: c.url,
-        full_name: c.fullName,
-        headline: c.headline,
-        location: "",
-        follower_count: -1,
-        match_score: null,
-        saved_to_crm: false,
-        match_post: c.matchComment.slice(0, MATCH_POST_LIMIT),
-      }));
+      const rows = [...candidates.entries()].map(([urn, c]) => {
+        const relativeTime = formatRelativeTime(c.createdAt);
+        const matchPostWithDate = `[Posted ${relativeTime}] ${c.matchComment}`;
+        return {
+          search_id: searchId,
+          linkedin_urn: urn,
+          linkedin_url: c.url,
+          full_name: c.fullName,
+          headline: c.headline,
+          location: "",
+          follower_count: -1,
+          match_score: null,
+          saved_to_crm: false,
+          match_post: matchPostWithDate.slice(0, MATCH_POST_LIMIT),
+        };
+      });
 
       if (rows.length > 0) {
         const { error } = await supabase.from("search_results").insert(rows);
@@ -236,6 +296,7 @@ Deno.serve(async (req) => {
           stillPending: rows.length,
           candidatesFound: rows.length,
           sourcePostsUsed,
+          keywordsUsed,
           creditsUsed,
           mode: "commenters",
           searchId,

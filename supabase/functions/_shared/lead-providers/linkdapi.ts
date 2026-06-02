@@ -199,6 +199,7 @@ export class LinkdAPIProvider implements LeadDataProvider {
     type RawComment = {
       author: RawAuthor;
       comment: string;
+      createdAt?: number;
     };
     type RawResponse = {
       comments: RawComment[];
@@ -226,6 +227,7 @@ export class LinkdAPIProvider implements LeadDataProvider {
           id: c.author?.id ?? "",
         },
         comment: c.comment ?? "",
+        createdAt: c.createdAt ?? 0,
       })),
       cursor: data.cursor ?? null,
     };

@@ -39,6 +39,33 @@ async function launchJob(jobId: string, stage: string) {
 
 Deno.serve(async (_req) => {
   try {
+    // --- Zombie cleanup: PRIMA dei loop pending/running ---
+    try {
+      const { data: cleaned, error: cleanupErr } = await supabase
+        .rpc("cleanup_stale_search_jobs", { stale_minutes: 7 });
+      if (cleanupErr) {
+        console.error("[cleanup] errore:", cleanupErr.message);
+      } else if (cleaned && cleaned.length > 0) {
+        console.log(`[cleanup] ${cleaned.length} job zombie marcati failed`);
+        for (const z of cleaned as Array<{ job_id: string; job_user_id: string; job_search_id: string }>) {
+          try {
+            const { data: refund } = await supabase.rpc("refund_search_credits", {
+              p_email: z.job_user_id,
+              p_search_id: z.job_search_id,
+            });
+            if (refund?.[0]?.refunded) {
+              console.log(`[refund] ${refund[0].amount_refunded} crediti a ${z.job_user_id} (zombie ${z.job_id})`);
+            }
+          } catch (e) {
+            console.error(`[refund] errore zombie ${z.job_id}:`, e);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("[cleanup] eccezione:", e);
+    }
+    // --- fine cleanup ---
+
     const { data: pendingJobs } = await supabase
       .from("search_jobs")
       .select("id")

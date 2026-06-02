@@ -10,6 +10,7 @@ export type SearchFilters = {
   count?: number;
   searchMode?: "profile" | "behavioral";
   postKeyword?: string;
+  postKeywordAlternatives?: string[];
 };
 
 /** Filtri per la ricerca dei post (motore comportamentale). */
@@ -55,6 +56,7 @@ export type PostComment = {
     id: string;
   };
   comment: string;
+  createdAt: number;
 };
 
 /** Risposta paginata di posts/comments. */
