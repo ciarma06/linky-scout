@@ -143,6 +143,8 @@ Deno.serve(async (req) => {
       );
     }
 
+    const DELETE_THRESHOLD = behavioralIntent === "expresses" ? 40 : 50;
+
     const { data: candidates, error } = await supabase
       .from("search_results")
       .select(
@@ -283,12 +285,16 @@ Return a JSON array with one object per profile. Use the same index values as th
       }),
     );
 
+    console.log(
+      `[score-profiles] DELETE threshold: ${DELETE_THRESHOLD} (behavioralIntent="${behavioralIntent}")`,
+    );
+
     // search_results FK: search_id → searches (not job_id)
     const { error: deleteLowError } = await supabase
       .from("search_results")
       .delete()
       .eq("search_id", searchId)
-      .lt("match_score", 50);
+      .lt("match_score", DELETE_THRESHOLD);
 
     if (deleteLowError) {
       throw new Error(`Failed to delete low scores: ${deleteLowError.message}`);

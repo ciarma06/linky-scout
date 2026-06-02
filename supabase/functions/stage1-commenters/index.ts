@@ -17,22 +17,14 @@ const TARGET_CANDIDATES = 20; // stop adattivo: smetti di provare keyword una vo
 const POSTS_PER_PAGE = 10;
 const MIN_POST_COMMENTS = 2; // sotto 2 il rapporto credito/lead è pessimo
 const COMMENTS_PER_POST = 30;
-const MIN_COMMENT_LENGTH = 40;
+// 10 = soglia minima per escludere emoji singoli e micro-reazioni; commenti tipo
+// 'SEND', 'PRODUCT', 'Same here' sono lead-magnet hunter di valore (interessati alla categoria del tool)
+const MIN_COMMENT_LENGTH = 10;
 const MATCH_POST_LIMIT = 2000;
 
 const COST_SEARCH_POSTS = 1;
 const COST_POST_COMMENTS = 1;
 const COST_PROFILE_OVERVIEW = 2;
-
-const LEAD_MAGNET_PATTERNS = [
-  /\b(comment|type|say)\s+["']?(send|link|yes)["']?\b/i,
-  /\b(send|sending)\s+(it|me|this|the\s+link)\b/i,
-  /\binterested\b/i,
-  /\bdm\s+me\b/i,
-  /\blink\s+please\b/i,
-  /\bshoot\s+me\s+a\s+dm\b/i,
-  /\bhappy\s+to\s+send\b/i,
-];
 
 const SELLER_IN_COMMENT_PATTERNS = [
   /\bat\s+[\w&\s'.,-]+\s+we\b/i,
@@ -137,7 +129,7 @@ Deno.serve(async (req) => {
         string,
         { url: string; fullName: string; headline: string; matchComment: string; createdAt: number }
       >();
-      const dropped = { commentNoise: 0, commentSeller: 0, headlineSeller: 0 };
+      const dropped = { commentTooShort: 0, commentSeller: 0, headlineSeller: 0 };
       const isHeadlineSeller = buildHeadlineSellerCheck(postKeyword);
 
       for (const kw of keywordsToTry) {
@@ -217,11 +209,7 @@ Deno.serve(async (req) => {
               const text = comment?.trim() ?? "";
 
               if (text.length < MIN_COMMENT_LENGTH) {
-                dropped.commentNoise += 1;
-                continue;
-              }
-              if (LEAD_MAGNET_PATTERNS.some((pattern) => pattern.test(text))) {
-                dropped.commentNoise += 1;
+                dropped.commentTooShort += 1;
                 continue;
               }
               if (SELLER_IN_COMMENT_PATTERNS.some((pattern) => pattern.test(text))) {
@@ -285,7 +273,7 @@ Deno.serve(async (req) => {
 
       console.log(
         `[stage1-commenters] inseriti ${rows.length} candidati. ` +
-        `Filtri gratis: A ${dropped.commentNoise} noise, B ${dropped.commentSeller} seller-pitch, C ${dropped.headlineSeller} seller-headline`,
+        `Filtri gratis: A ${dropped.commentTooShort} too-short, B ${dropped.commentSeller} seller-pitch, C ${dropped.headlineSeller} seller-headline`,
       );
       console.log(`[stage1-commenters] CREDITI questo chunk: ${creditsUsed}`);
 
@@ -323,6 +311,9 @@ Deno.serve(async (req) => {
       for (const p of pending) {
         const username = p.linkedin_url.split("/in/")[1]?.replace(/\/$/, "") ?? "";
         overviewCalls += 1;
+        console.log(
+          `[stage1-commenters] overview attempt: url="${p.linkedin_url}" → username="${username}"`,
+        );
 
         if (!username) {
           await supabase
@@ -348,8 +339,11 @@ Deno.serve(async (req) => {
               linkedin_urn: overview.urn ?? p.linkedin_urn,
             })
             .eq("id", p.id);
-        } catch {
+        } catch (err) {
           overviewFailed += 1;
+          console.warn(
+            `[stage1-commenters] overview failed: username="${username}", url="${p.linkedin_url}", error="${err instanceof Error ? err.message : String(err)}"`,
+          );
           await supabase
             .from("search_results")
             .update({ follower_count: 0 })
