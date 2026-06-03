@@ -39,31 +39,31 @@ import type {
   StartSearchResponse,
 } from "@/lib/types";
 
-const SAMPLE_PROMPTS = [
-  "B2B founder, USA, SaaS, <10k followers",
-  "CEO startup tech, Europe, AI sector",
-  "Solo founder doing outreach, English speaking",
+/** `prompt` is sent to start-search / search_cache — keep in sync when pre-caching. */
+const SAMPLE_PROMPTS: { label: string; prompt: string }[] = [
+  {
+    label: "B2B SaaS founders · USA · <15k followers",
+    prompt:
+      "B2B SaaS founder or co-founder in the USA, SaaS or B2B software industry, under 15k followers",
+  },
+  {
+    label: "Tech startup CEOs · Europe · AI sector",
+    prompt:
+      "CEO at a tech startup in Europe, AI or machine learning sector",
+  },
+  {
+    label: "Heads of Sales · Series A–B · USA",
+    prompt:
+      "Head of Sales or VP Sales at a Series A or Series B company in the USA",
+  },
+  {
+    label: "Bootstrapped SaaS founders · UK & Australia",
+    prompt:
+      "Bootstrapped SaaS founder in the UK or Australia",
+  },
 ];
 
 const POLL_INTERVAL_MS = 3000;
-
-/** UI-only hint: prompt likely routes to behavioral search (not parse-icp). */
-function promptSuggestsBehavioralSearch(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  if (t.length < 12) return false;
-  const patterns = [
-    /\bpost(s|ing)?\s+(about|on)\b/,
-    /\bcomplain(s|ing)?\s+(about|that)\b/,
-    /\b(shares?|sharing)\s+(about|on)\b/,
-    /\b(writes?|writing)\s+(about|on)\b/,
-    /\b(frustrated|frustration)\s+(with|about)\b/,
-    /\b(discuss(es|ing)?|talk(s|ing)?)\s+(about|on)\b/,
-    /\b(express(es|ing)?|vent(s|ing)?)\s+(about|that)\b/,
-    /\bwho\s+(post|share|write|complain)/,
-    /\b(founders?|ceos?)\s+posting\b/,
-  ];
-  return patterns.some((p) => p.test(t));
-}
 
 type UiStage = "idle" | "running" | "done" | "error";
 
@@ -383,7 +383,6 @@ function NewSearchView() {
 
   const isRunning = ui.stage === "running";
   const showResults = ui.stage === "done" && ui.results.length >= 0;
-  const showBehavioralPreviewNote = promptSuggestsBehavioralSearch(prompt);
 
   return (
     <div className="flex flex-col gap-8">
@@ -396,60 +395,76 @@ function NewSearchView() {
         </p>
       </header>
 
-      <Card className="rounded-2xl">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <Sparkles className="size-4 text-[#6d47f5]" />
-            Describe your ICP
-          </CardTitle>
-          <CardDescription>
-            Be specific about industry, geography, role, follower range or any
-            behavioural signals.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-            <Textarea
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={6}
-              disabled={submitting || isRunning}
-              placeholder="e.g. B2B SaaS founder in USA or UK, less than 10k followers, does outreach alone, bootstrapped..."
-              className="min-h-[150px] resize-none rounded-xl bg-background p-4 text-sm leading-relaxed"
-            />
+      <div className="flex flex-col">
+        <Card className="rounded-2xl">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Sparkles className="size-4 text-[#6d47f5]" />
+              Describe your ICP
+            </CardTitle>
+            <CardDescription>
+              Be specific about industry, geography, role, follower range or any
+              behavioural signals.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+              <Textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={6}
+                disabled={submitting || isRunning}
+                placeholder="e.g. B2B SaaS founder in USA or UK, less than 10k followers, does outreach alone, bootstrapped..."
+                className="min-h-[150px] resize-none rounded-xl bg-background p-4 text-sm leading-relaxed"
+              />
 
-            {showBehavioralPreviewNote && <BehavioralPreviewNotice />}
+              <div className="flex flex-wrap gap-2">
+                {SAMPLE_PROMPTS.map((sample) => (
+                  <button
+                    type="button"
+                    key={sample.prompt}
+                    onClick={() => handleSamplePrompt(sample.prompt)}
+                    disabled={submitting || isRunning}
+                    className={cn(
+                      "rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors",
+                      "hover:border-[#6d47f5]/60 hover:bg-[#6d47f5]/5 hover:text-foreground",
+                      "disabled:cursor-not-allowed disabled:opacity-60"
+                    )}
+                  >
+                    {sample.label}
+                  </button>
+                ))}
+              </div>
 
-            <div className="flex flex-wrap gap-2">
-              {SAMPLE_PROMPTS.map((sample) => (
-                <button
-                  type="button"
-                  key={sample}
-                  onClick={() => handleSamplePrompt(sample)}
-                  disabled={submitting || isRunning}
-                  className={cn(
-                    "rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors",
-                    "hover:border-[#6d47f5]/60 hover:bg-[#6d47f5]/5 hover:text-foreground",
-                    "disabled:cursor-not-allowed disabled:opacity-60"
-                  )}
-                >
-                  {sample}
-                </button>
-              ))}
-            </div>
+              <Button
+                type="submit"
+                size="lg"
+                disabled={submitting || isRunning || !prompt.trim()}
+                className="h-12 w-full rounded-xl bg-[#6d47f5] text-base font-medium text-white hover:bg-[#6d47f5]/90"
+              >
+                <Search className="size-4" />
+                {isRunning ? "Searching..." : submitting ? "Starting..." : "Search"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
 
-            <Button
-              type="submit"
-              size="lg"
-              disabled={submitting || isRunning || !prompt.trim()}
-              className="h-12 w-full rounded-xl bg-[#6d47f5] text-base font-medium text-white hover:bg-[#6d47f5]/90"
-            >
-              <Search className="size-4" />
-              {isRunning ? "Searching..." : submitting ? "Starting..." : "Search"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
+        <p
+          role="note"
+          className="mt-5 flex gap-2 text-xs leading-relaxed text-muted-foreground"
+        >
+          <Info
+            className="mt-0.5 size-3.5 shrink-0"
+            aria-hidden
+          />
+          <span>
+            Behavioral search (e.g. &quot;founders complaining about hiring&quot;)
+            is in preview. Results depend on how openly people discuss the topic
+            on LinkedIn — niche or private conversations may return fewer
+            matches. We are working on it.
+          </span>
+        </p>
+      </div>
 
       {isRunning && (
         <Card className="rounded-2xl">
@@ -524,32 +539,6 @@ function NewSearchView() {
         open={buyCreditsOpen}
         onOpenChange={setBuyCreditsOpen}
       />
-    </div>
-  );
-}
-
-function BehavioralPreviewNotice() {
-  return (
-    <div
-      role="note"
-      aria-label="Behavioral search preview notice"
-      className="flex gap-2.5 rounded-xl border border-border/80 bg-muted/40 px-3.5 py-3"
-    >
-      <Info
-        className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-        aria-hidden
-      />
-      <div className="flex min-w-0 flex-col gap-1 text-xs leading-relaxed text-muted-foreground">
-        <p className="font-medium text-foreground/90">
-          Behavioral search · Preview
-        </p>
-        <p>
-          Behavioral search finds leads by what they post and engage with, not
-          just their profile. It&apos;s currently in preview — results quality
-          depends on how openly people discuss the topic on LinkedIn. Highly
-          niche or private conversations may return fewer matches.
-        </p>
-      </div>
     </div>
   );
 }
