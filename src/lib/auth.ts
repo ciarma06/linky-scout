@@ -14,10 +14,10 @@ export type AuthPlan = "assistant" | "scout" | "bundle";
 export interface AuthState {
   jwt: string;
   email: string;
-  access: string;
+  access: "premium" | "trial";
   expiresAt: string;
   daysLeft: number;
-  plan?: AuthPlan;
+  plan: "assistant" | "scout" | "bundle" | "trial" | null;
   checkedAt?: string;
 }
 
@@ -155,14 +155,18 @@ export async function verifyOtp(
       const plan =
         data.plan === "assistant" ||
         data.plan === "scout" ||
-        data.plan === "bundle"
-          ? (data.plan as AuthPlan)
-          : undefined;
+        data.plan === "bundle" ||
+        data.plan === "trial"
+          ? data.plan
+          : null;
 
       return {
         jwt: data.jwt,
         email: typeof data.email === "string" ? data.email : email,
-        access: typeof data.access === "string" ? data.access : "active",
+        access:
+          data.access === "premium" || data.access === "trial"
+            ? data.access
+            : "premium",
         expiresAt:
           typeof data.expiresAt === "string" ? data.expiresAt : "",
         daysLeft:

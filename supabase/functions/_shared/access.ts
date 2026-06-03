@@ -1,189 +1,96 @@
-// _shared/access.ts
-//
-// Shared access-control helper for all Linky Edge Functions
-// (used by both Linky Assistant and Linky Scout).
-//
-// resolveAccess(email, supabaseUrl, serviceKey, requiredProduct?)
-//   • returns the user's current entitlement state
-//   • optionally checks that the user's plan grants a specific product
-//
-// Plan → Product mapping:
-//   assistant → ['assistant']
-//   scout     → ['scout']
-//   bundle    → ['assistant', 'scout']
-//
-// The function is intentionally REST-based (no @supabase/supabase-js import)
-// so it stays drop-in safe inside any Edge Function and uses the
-// SERVICE_ROLE_KEY both as `apikey` header AND as Bearer token.
+//_shared/access.ts
 
 export type Plan = "assistant" | "scout" | "bundle";
-export type Product = "assistant" | "scout";
+export type AccessKind = "premium" | "trial" | "trial_ended" | "expired" | "none";
 
 export type AccessResult =
   | { access: "premium"; plan: Plan; expiresAt: string; daysLeft: number }
-  | {
-      access: "waitlist_trial";
-      expiresAt: string;
-      daysLeft: number;
-      plan?: undefined;
-    }
-  | { access: "expired_premium"; plan?: undefined }
-  | { access: "expired_waitlist"; plan?: undefined }
-  | { access: "unauthorized"; plan?: undefined };
+  | { access: "trial"; plan: "trial"; expiresAt: string; daysLeft: number }
+  | { access: "trial_ended"; plan: "trial"; expiresAt: string }
+  | { access: "expired"; plan: Plan; expiresAt: string }
+  | { access: "none" };
 
-const TRIAL_DAYS = 7;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-const PLAN_GRANTS: Record<Plan, Product[]> = {
+export const PLAN_GRANTS: Record<Plan, readonly ("assistant" | "scout")[]> = {
   assistant: ["assistant"],
   scout: ["scout"],
   bundle: ["assistant", "scout"],
 };
 
-interface SubscriptionRow {
-  email: string;
-  plan?: string | null;
-  status?: string | null;
-  current_period_end?: string | null;
+function restHeaders(serviceKey: string): Record<string, string> {
+  return {
+    apikey: serviceKey,
+    Authorization: `Bearer ${serviceKey}`,
+    "Content-Type": "application/json",
+  };
 }
 
-interface WaitlistRow {
-  email: string;
-  created_at?: string | null;
-}
-
-function daysLeftBetween(future: number, now: number): number {
-  return Math.max(0, Math.ceil((future - now) / DAY_MS));
-}
-
-async function restGet<T>(
+async function restGet(
   supabaseUrl: string,
   serviceKey: string,
-  path: string,
-): Promise<T[]> {
-  const url = `${supabaseUrl}/rest/v1/${path}`;
+  table: string,
+  email: string,
+): Promise<Record<string, unknown>[]> {
+  const url = `${supabaseUrl}/rest/v1/${table}?email=eq.${encodeURIComponent(email)}&select=*`;
+  const res = await fetch(url, {
+    headers: restHeaders(serviceKey),
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!res.ok) return [];
   try {
-    const res = await fetch(url, {
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-        Accept: "application/json",
-      },
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.error(
-        `[access.ts] REST GET ${path} failed (${res.status}): ${text}`,
-      );
-      return [];
-    }
-    return (await res.json()) as T[];
-  } catch (err) {
-    console.error(`[access.ts] REST GET ${path} threw:`, err);
+    return (await res.json()) as Record<string, unknown>[];
+  } catch {
     return [];
   }
 }
 
-function isPlan(value: string | null | undefined): value is Plan {
-  return value === "assistant" || value === "scout" || value === "bundle";
-}
-
 export async function resolveAccess(
-  email: string,
+  rawEmail: string,
   supabaseUrl: string,
   serviceKey: string,
-  requiredProduct?: Product,
+  // deno-lint-ignore no-unused-vars
+  requiredProduct?: Plan,
 ): Promise<AccessResult> {
-  if (!email || !supabaseUrl || !serviceKey) {
-    return { access: "unauthorized" };
-  }
-
-  const normalized = email.trim().toLowerCase();
-  if (!normalized) return { access: "unauthorized" };
-
-  const encoded = encodeURIComponent(normalized);
+  const email = rawEmail.trim().toLowerCase();
   const now = Date.now();
 
-  // ── 1. user_subscriptions ──────────────────────────────────────────────
-  const subRows = await restGet<SubscriptionRow>(
-    supabaseUrl,
-    serviceKey,
-    `user_subscriptions?email=eq.${encoded}&select=email,plan,status,current_period_end&limit=1`,
-  );
+  const rows = await restGet(supabaseUrl, serviceKey, "user_subscriptions", email);
+  if (rows.length === 0) return { access: "none" };
 
-  if (subRows.length > 0) {
-    const sub = subRows[0];
-    const expiresAtMs = sub.current_period_end
-      ? Date.parse(sub.current_period_end)
-      : NaN;
-    const isActive =
-      sub.status === "active" &&
-      Number.isFinite(expiresAtMs) &&
-      expiresAtMs > now;
+  const row = rows[0];
+  const planRaw = String(row.plan ?? "").toLowerCase();
+  const expIso = row.current_period_end as string | null;
+  if (!expIso) return { access: "none" };
+  const expMs = Date.parse(expIso);
+  if (!Number.isFinite(expMs)) return { access: "none" };
 
-    if (isActive) {
-      const planRaw = (sub.plan ?? "").toLowerCase();
-      if (!isPlan(planRaw)) {
-        console.error(
-          `[access.ts] subscription for ${normalized} has invalid plan="${sub.plan}"`,
-        );
-        return { access: "unauthorized" };
-      }
+  const isActive = row.status === "active" && expMs > now;
+  const daysLeft = Math.ceil((expMs - now) / 86_400_000);
 
-      if (requiredProduct && !PLAN_GRANTS[planRaw].includes(requiredProduct)) {
-        return { access: "unauthorized" };
-      }
-
-      return {
-        access: "premium",
-        plan: planRaw,
-        expiresAt: new Date(expiresAtMs).toISOString(),
-        daysLeft: daysLeftBetween(expiresAtMs, now),
-      };
-    }
-
-    // Found but not active / expired → expired_premium
-    return { access: "expired_premium" };
+  if (planRaw === "trial") {
+    if (isActive) return { access: "trial", plan: "trial", expiresAt: expIso, daysLeft };
+    return { access: "trial_ended", plan: "trial", expiresAt: expIso };
   }
 
-  // ── 2. utenti_waitlist (legacy trial fallback) ─────────────────────────
-  const wlRows = await restGet<WaitlistRow>(
-    supabaseUrl,
-    serviceKey,
-    `utenti_waitlist?email=eq.${encoded}&select=email,created_at&limit=1`,
-  );
-
-  if (wlRows.length > 0) {
-    const wl = wlRows[0];
-    const createdMs = wl.created_at ? Date.parse(wl.created_at) : NaN;
-    if (!Number.isFinite(createdMs)) {
-      return { access: "expired_waitlist" };
-    }
-
-    const expiresMs = createdMs + TRIAL_DAYS * DAY_MS;
-    if (expiresMs > now) {
-      return {
-        access: "waitlist_trial",
-        expiresAt: new Date(expiresMs).toISOString(),
-        daysLeft: daysLeftBetween(expiresMs, now),
-      };
-    }
-    return { access: "expired_waitlist" };
+  if (planRaw === "assistant" || planRaw === "scout" || planRaw === "bundle") {
+    if (isActive) return { access: "premium", plan: planRaw, expiresAt: expIso, daysLeft };
+    return { access: "expired", plan: planRaw, expiresAt: expIso };
   }
 
-  return { access: "unauthorized" };
+  return { access: "none" };
 }
 
-/**
- * Convenience helper: returns true if the access result grants the user
- * the ability to run Scout searches (`premium` with a scout-granting plan
- * OR waitlist_trial). Returns false otherwise.
- */
 export function canUseScout(result: AccessResult): boolean {
-  if (result.access === "waitlist_trial") return true;
+  if (result.access === "trial") return true;
   if (result.access === "premium") {
     return PLAN_GRANTS[result.plan].includes("scout");
+  }
+  return false;
+}
+
+export function canUseAssistant(result: AccessResult): boolean {
+  if (result.access === "trial") return true;
+  if (result.access === "premium") {
+    return PLAN_GRANTS[result.plan].includes("assistant");
   }
   return false;
 }

@@ -19,9 +19,6 @@ import { requestOtp, verifyOtp } from "@/lib/auth";
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const BRAND = "#6d47f5";
 
-// Purchase / subscription page URL. Move to an env var if you want to parameterise it.
-const PURCHASE_URL = "https://linkyassistant.com";
-
 type Step = "email" | "otp" | "expired";
 
 export default function LoginPage() {
@@ -34,7 +31,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [expiredKind, setExpiredKind] = useState<
-    "waitlist" | "premium" | null
+    "trial_ended" | "expired" | null
   >(null);
 
   // Already logged in → go to dashboard.
@@ -86,15 +83,13 @@ export default function LoginPage() {
       return;
     }
 
-    if (res.access === "expired_waitlist" || res.access === "expired_premium") {
-      setExpiredKind(
-        res.access === "expired_premium" ? "premium" : "waitlist"
-      );
+    if (res.access === "trial_ended" || res.access === "expired") {
+      setExpiredKind(res.access);
       setStep("expired");
       return;
     }
 
-    if (res.access === "unauthorized") {
+    if (res.access === "none") {
       setError("Email address not recognised.");
       return;
     }
@@ -244,12 +239,14 @@ export default function LoginPage() {
             <>
               <CardHeader>
                 <CardTitle className="text-xl">
-                  Your trial has ended
+                  {expiredKind === "trial_ended"
+                    ? "Your trial has ended"
+                    : "Your subscription has expired"}
                 </CardTitle>
                 <CardDescription>
-                  {expiredKind === "premium"
-                    ? "Your premium subscription has expired. Renew to keep using Linky Scout."
-                    : "Your trial period is over. Purchase a plan to keep using Linky Scout."}
+                  {expiredKind === "trial_ended"
+                    ? "Your 7-day trial is over. Upgrade to keep using Linky Scout."
+                    : "Your subscription has expired. Renew to keep using Linky Scout."}
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
@@ -260,11 +257,11 @@ export default function LoginPage() {
                   style={{ backgroundColor: BRAND }}
                 >
                   <a
-                    href={PURCHASE_URL}
+                    href="https://www.linkyassistant.com/#pricing"
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    Get a plan
+                    View plans →
                   </a>
                 </Button>
                 <Button
