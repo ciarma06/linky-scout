@@ -87,10 +87,21 @@ Deno.serve(async (req) => {
       console.error("[get-credits] user_credits lookup error:", creditsError);
     }
 
-    // Resolve plan via the canonical access helper so the answer matches
-    // every other Scout endpoint exactly.
+    const { data: subscription, error: subscriptionError } = await supabase
+      .from("user_subscriptions")
+      .select("plan")
+      .eq("email", email)
+      .maybeSingle();
+
+    if (subscriptionError) {
+      console.error(
+        "[get-credits] user_subscriptions lookup error:",
+        subscriptionError,
+      );
+    }
+
     const access = await resolveAccess(email, SUPABASE_URL, SERVICE_KEY);
-    const plan = access.access === "premium" ? access.plan : null;
+    const plan = subscription?.plan ?? null;
 
     return jsonResponse({
       subscription_credits:

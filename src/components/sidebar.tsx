@@ -8,7 +8,15 @@ import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
+import { useCredits } from "@/lib/credits-context";
 import { ThemeToggle } from "@/components/theme-toggle";
+
+const PLAN_LABELS = {
+  trial: "Trial",
+  assistant: "Assistant",
+  scout: "Scout",
+  bundle: "Bundle",
+} as const;
 
 interface NavItem {
   label: string;
@@ -51,12 +59,24 @@ const NAV_ITEMS: NavItem[] = [
   },
 ];
 
+function formatPlanLabel(
+  plan: string | null | undefined,
+  isLoading: boolean,
+  hasCredits: boolean,
+): string {
+  if (isLoading && !hasCredits) return "—";
+  if (!plan) return "Free";
+  return PLAN_LABELS[plan as keyof typeof PLAN_LABELS] ?? "Free";
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const { user } = useAuth();
+  const { credits, isLoading } = useCredits();
 
   const initial = user?.email?.[0]?.toUpperCase() ?? "?";
   const email = user?.email ?? "";
+  const planLabel = formatPlanLabel(credits?.plan, isLoading, !!credits);
 
   return (
     <aside className="flex h-screen w-[260px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
@@ -135,7 +155,7 @@ export function Sidebar() {
               {email || "Signed in"}
             </p>
             <p className="truncate text-xs text-muted-foreground">
-              {user?.access ?? ""}
+              {planLabel}
             </p>
           </div>
           <ThemeToggle />

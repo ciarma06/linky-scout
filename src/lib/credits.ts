@@ -61,7 +61,7 @@ export interface CreditsResponse {
   credits_period_end: string | null;
   messages_used: number;
   messages_limit: number;
-  plan: "assistant" | "scout" | "bundle" | null;
+  plan: "trial" | "assistant" | "scout" | "bundle" | null;
   access: string;
 }
 
