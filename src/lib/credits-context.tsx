@@ -14,6 +14,7 @@ import { CreditsResponse, fetchCredits } from "./credits";
 
 interface CreditsContextType {
   credits: CreditsResponse | null;
+  plan: CreditsResponse["plan"];
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -62,7 +63,13 @@ export function CreditsProvider({ children }: { children: React.ReactNode }) {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const value = useMemo<CreditsContextType>(
-    () => ({ credits, isLoading, error, refresh }),
+    () => ({
+      credits,
+      plan: credits?.plan ?? null,
+      isLoading,
+      error,
+      refresh,
+    }),
     [credits, isLoading, error, refresh],
   );
 

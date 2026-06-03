@@ -29,7 +29,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { SavedLeadsLocked } from "@/components/saved-leads-locked";
 import { useAuth } from "@/lib/auth-context";
+import { canSaveLeads } from "@/lib/access";
+import { useCredits } from "@/lib/credits-context";
 import { avatarHue, formatRelativeDate, truncate } from "@/lib/format";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
@@ -37,6 +40,7 @@ import type { SavedLead } from "@/lib/types";
 
 export default function SavedLeadsPage() {
   const { user } = useAuth();
+  const { plan, isLoading: creditsLoading } = useCredits();
   const [leads, setLeads] = useState<SavedLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingDelete, setPendingDelete] = useState<SavedLead | null>(null);
@@ -45,7 +49,7 @@ export default function SavedLeadsPage() {
   const userEmail = user?.email;
 
   useEffect(() => {
-    if (!userEmail) return;
+    if (!userEmail || !canSaveLeads(plan)) return;
 
     let cancelled = false;
     async function load() {
@@ -71,7 +75,7 @@ export default function SavedLeadsPage() {
     return () => {
       cancelled = true;
     };
-  }, [userEmail]);
+  }, [userEmail, plan]);
 
   async function confirmDelete() {
     if (!pendingDelete) return;
@@ -91,6 +95,23 @@ export default function SavedLeadsPage() {
     setLeads((prev) => prev.filter((l) => l.id !== pendingDelete.id));
     setPendingDelete(null);
     toast.success("Lead removed.");
+  }
+
+  if (creditsLoading) {
+    return (
+      <div className="flex flex-col gap-8">
+        <header className="flex flex-col gap-2">
+          <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground">
+            Saved Leads
+          </h1>
+        </header>
+        <LeadsSkeleton />
+      </div>
+    );
+  }
+
+  if (!canSaveLeads(plan)) {
+    return <SavedLeadsLocked />;
   }
 
   return (

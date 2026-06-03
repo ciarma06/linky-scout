@@ -24,6 +24,9 @@ import {
 } from "@/components/ui/table";
 import { LeadDetailSheet } from "@/components/lead-detail-sheet";
 import { ScoreBadge } from "@/components/score-badge";
+import { UpgradeModal } from "@/components/upgrade-modal";
+import { canSaveLeads } from "@/lib/access";
+import { useCredits } from "@/lib/credits-context";
 import { avatarHue, formatFollowers, truncate } from "@/lib/format";
 import { saveLead } from "@/lib/leads";
 import { cn } from "@/lib/utils";
@@ -67,9 +70,16 @@ export function SearchResultsTable({
   const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
   const [active, setActive] = useState<SearchResult | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const { plan } = useCredits();
 
   async function handleSave(result: SearchResult) {
     if (savedIds.has(result.id) || savingIds.has(result.id)) return;
+
+    if (!canSaveLeads(plan)) {
+      setUpgradeOpen(true);
+      return;
+    }
 
     setSavingIds((prev) => {
       const next = new Set(prev);
@@ -260,6 +270,11 @@ export function SearchResultsTable({
         isSaved={active ? savedIds.has(active.id) : false}
         isSaving={active ? savingIds.has(active.id) : false}
         onSave={handleSave}
+      />
+
+      <UpgradeModal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
       />
     </>
   );
