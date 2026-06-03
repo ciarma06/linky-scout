@@ -39,28 +39,11 @@ import type {
   StartSearchResponse,
 } from "@/lib/types";
 
-/** `prompt` is sent to start-search / search_cache — keep in sync when pre-caching. */
-const SAMPLE_PROMPTS: { label: string; prompt: string }[] = [
-  {
-    label: "B2B SaaS founders · USA · <15k followers",
-    prompt:
-      "B2B SaaS founder or co-founder in the USA, SaaS or B2B software industry, under 15k followers",
-  },
-  {
-    label: "Tech startup CEOs · Europe · AI sector",
-    prompt:
-      "CEO at a tech startup in Europe, AI or machine learning sector",
-  },
-  {
-    label: "Heads of Sales · Series A–B · USA",
-    prompt:
-      "Head of Sales or VP Sales at a Series A or Series B company in the USA",
-  },
-  {
-    label: "Bootstrapped SaaS founders · UK & Australia",
-    prompt:
-      "Bootstrapped SaaS founder in the UK or Australia",
-  },
+const SAMPLE_PROMPTS = [
+  "B2B SaaS founders, USA, <15k followers",
+  "CEO tech startup, Europe, AI sector",
+  "Head of Sales, Series A-B, USA",
+  "Founder, bootstrapped SaaS, UK/Australia",
 ];
 
 const POLL_INTERVAL_MS = 3000;
@@ -422,8 +405,8 @@ function NewSearchView() {
                 {SAMPLE_PROMPTS.map((sample) => (
                   <button
                     type="button"
-                    key={sample.prompt}
-                    onClick={() => handleSamplePrompt(sample.prompt)}
+                    key={sample}
+                    onClick={() => handleSamplePrompt(sample)}
                     disabled={submitting || isRunning}
                     className={cn(
                       "rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors",
@@ -431,7 +414,7 @@ function NewSearchView() {
                       "disabled:cursor-not-allowed disabled:opacity-60"
                     )}
                   >
-                    {sample.label}
+                    {sample}
                   </button>
                 ))}
               </div>
