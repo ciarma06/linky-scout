@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -61,6 +62,23 @@ export function CreditsProvider({ children }: { children: React.ReactNode }) {
     void refresh();
   }, [user?.jwt, refresh]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  const lastVisibilityRefreshAt = useRef(0);
+
+  useEffect(() => {
+    if (!user?.jwt) return;
+
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastVisibilityRefreshAt.current < 5000) return;
+      lastVisibilityRefreshAt.current = now;
+      void refresh();
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [user?.jwt, refresh]);
 
   const value = useMemo<CreditsContextType>(
     () => ({

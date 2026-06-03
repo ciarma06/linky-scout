@@ -40,13 +40,18 @@ import type { SavedLead } from "@/lib/types";
 
 export default function SavedLeadsPage() {
   const { user } = useAuth();
-  const { plan, isLoading: creditsLoading } = useCredits();
+  const { plan, isLoading: creditsLoading, refresh } = useCredits();
   const [leads, setLeads] = useState<SavedLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingDelete, setPendingDelete] = useState<SavedLead | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   const userEmail = user?.email;
+
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per page mount
+  }, []);
 
   useEffect(() => {
     if (!userEmail || !canSaveLeads(plan)) return;
