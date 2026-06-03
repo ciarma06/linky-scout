@@ -12,8 +12,9 @@ const supabase = createClient(
 
 const CHUNK_SIZE = 12;
 const MAX_CANDIDATES = 25;
-const MAX_POSTS_PAGES = 3;
-const TARGET_CANDIDATES = 20; // stop adattivo: smetti di provare keyword una volta raggiunti
+const MAX_POSTS_PAGES = 1;
+const TARGET_CANDIDATES = 12; // stop adattivo: smetti di provare keyword una volta raggiunti
+const MAX_SOURCE_POSTS_PER_KEYWORD = 3;
 const POSTS_PER_PAGE = 10;
 const MIN_POST_COMMENTS = 2; // sotto 2 il rapporto credito/lead è pessimo
 const COMMENTS_PER_POST = 30;
@@ -231,10 +232,11 @@ Deno.serve(async (req) => {
           }
         }
         sourcePosts.sort((a, b) => b.commentsCount - a.commentsCount);
+        const topSourcePosts = sourcePosts.slice(0, MAX_SOURCE_POSTS_PER_KEYWORD);
 
         const beforeSize = candidates.size;
 
-        for (const sp of sourcePosts) {
+        for (const sp of topSourcePosts) {
           if (candidates.size >= TARGET_CANDIDATES) break;
           console.log(
             `[stage1-commenters] calling getPostComments postID="${sp.postID}" urn="${sp.urn}" commentsCount=${sp.commentsCount}`,

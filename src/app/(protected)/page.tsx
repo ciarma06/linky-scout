@@ -4,7 +4,7 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search, Sparkles } from "lucide-react";
+import { Info, Search, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,24 @@ const SAMPLE_PROMPTS = [
 ];
 
 const POLL_INTERVAL_MS = 3000;
+
+/** UI-only hint: prompt likely routes to behavioral search (not parse-icp). */
+function promptSuggestsBehavioralSearch(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (t.length < 12) return false;
+  const patterns = [
+    /\bpost(s|ing)?\s+(about|on)\b/,
+    /\bcomplain(s|ing)?\s+(about|that)\b/,
+    /\b(shares?|sharing)\s+(about|on)\b/,
+    /\b(writes?|writing)\s+(about|on)\b/,
+    /\b(frustrated|frustration)\s+(with|about)\b/,
+    /\b(discuss(es|ing)?|talk(s|ing)?)\s+(about|on)\b/,
+    /\b(express(es|ing)?|vent(s|ing)?)\s+(about|that)\b/,
+    /\bwho\s+(post|share|write|complain)/,
+    /\b(founders?|ceos?)\s+posting\b/,
+  ];
+  return patterns.some((p) => p.test(t));
+}
 
 type UiStage = "idle" | "running" | "done" | "error";
 
@@ -365,6 +383,7 @@ function NewSearchView() {
 
   const isRunning = ui.stage === "running";
   const showResults = ui.stage === "done" && ui.results.length >= 0;
+  const showBehavioralPreviewNote = promptSuggestsBehavioralSearch(prompt);
 
   return (
     <div className="flex flex-col gap-8">
@@ -398,6 +417,8 @@ function NewSearchView() {
               placeholder="e.g. B2B SaaS founder in USA or UK, less than 10k followers, does outreach alone, bootstrapped..."
               className="min-h-[150px] resize-none rounded-xl bg-background p-4 text-sm leading-relaxed"
             />
+
+            {showBehavioralPreviewNote && <BehavioralPreviewNotice />}
 
             <div className="flex flex-wrap gap-2">
               {SAMPLE_PROMPTS.map((sample) => (
@@ -503,6 +524,32 @@ function NewSearchView() {
         open={buyCreditsOpen}
         onOpenChange={setBuyCreditsOpen}
       />
+    </div>
+  );
+}
+
+function BehavioralPreviewNotice() {
+  return (
+    <div
+      role="note"
+      aria-label="Behavioral search preview notice"
+      className="flex gap-2.5 rounded-xl border border-border/80 bg-muted/40 px-3.5 py-3"
+    >
+      <Info
+        className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+        aria-hidden
+      />
+      <div className="flex min-w-0 flex-col gap-1 text-xs leading-relaxed text-muted-foreground">
+        <p className="font-medium text-foreground/90">
+          Behavioral search · Preview
+        </p>
+        <p>
+          Behavioral search finds leads by what they post and engage with, not
+          just their profile. It&apos;s currently in preview — results quality
+          depends on how openly people discuss the topic on LinkedIn. Highly
+          niche or private conversations may return fewer matches.
+        </p>
+      </div>
     </div>
   );
 }
