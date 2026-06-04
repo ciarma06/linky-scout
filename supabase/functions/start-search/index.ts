@@ -1,6 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { getCachedResults } from "../_shared/lead-providers/cache.ts";
+import { getCachedResults, hashICP } from "../_shared/lead-providers/cache.ts";
 import { canUseScout, resolveAccess } from "../_shared/access.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -8,6 +8,22 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const JWT_SECRET = Deno.env.get("AUTH_JWT_SECRET")!;
 
 const SEARCH_COST = 100;
+
+const DEFAULT_PROMPTS = [
+  "B2B SaaS founders, USA, <15k followers",
+  "CEO tech startup, Europe, AI sector",
+  "Head of Sales, Series A-B, USA",
+  "Founder, bootstrapped SaaS, UK/Australia",
+] as const;
+
+let _defaultHashesCache: Set<string> | null = null;
+
+async function getDefaultHashes(): Promise<Set<string>> {
+  if (_defaultHashesCache) return _defaultHashesCache;
+  const hashes = await Promise.all(DEFAULT_PROMPTS.map((p) => hashICP(p)));
+  _defaultHashesCache = new Set(hashes);
+  return _defaultHashesCache;
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -78,13 +94,31 @@ async function deductCredits(
     throw new Error(error.message);
   }
 
-  // The RPC returns a row (TABLE return) — supabase-js gives an array.
   const row = Array.isArray(data) ? data[0] : data;
   return {
     success: Boolean(row?.success),
     new_balance: typeof row?.new_balance === "number" ? row.new_balance : 0,
     used_from: typeof row?.used_from === "string" ? row.used_from : null,
   };
+}
+
+async function userHasPreviousSearch(
+  email: string,
+  icpHash: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("searches")
+    .select("id")
+    .eq("user_id", email)
+    .eq("icp_hash", icpHash)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[start-search] previous search lookup failed:", error);
+    return false;
+  }
+  return data !== null;
 }
 
 Deno.serve(async (req) => {
@@ -104,7 +138,6 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "Unauthorized" }, 401);
   }
 
-  // ── Plan check ───────────────────────────────────────────────────────
   const access = await resolveAccess(
     auth.email,
     SUPABASE_URL,
@@ -121,25 +154,46 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { icpPrompt } = body as { icpPrompt?: string };
+    const { icpPrompt: rawPrompt } = body as { icpPrompt?: string };
 
-    if (!icpPrompt?.trim()) {
+    if (!rawPrompt?.trim()) {
       return jsonResponse(
         { error: "Missing required field: icpPrompt" },
         400,
       );
     }
 
-    // The authenticated email from the JWT is the source of truth.
+    const icpPrompt = rawPrompt.trim();
     const userEmail = auth.email;
 
-    // We need a searchId BEFORE deducting credits so the transaction can
-    // be linked to the search. Create the row first; if deduction fails
-    // we delete it. Cache check happens after — the search row exists
-    // either way so the user sees it in their history.
+    const icpHash = await hashICP(icpPrompt);
+    const defaults = await getDefaultHashes();
+    const isDefault = defaults.has(icpHash);
+
+    if (access.access === "trial" && !isDefault) {
+      return jsonResponse(
+        {
+          error: "upgrade_required",
+          message: "Upgrade to run custom searches",
+          access: "trial",
+        },
+        403,
+      );
+    }
+
+    let isFree = isDefault;
+    if (!isFree && access.access === "premium") {
+      const hasPrior = await userHasPreviousSearch(userEmail, icpHash);
+      if (hasPrior) isFree = true;
+    }
+
     const { data: search, error: searchError } = await supabase
       .from("searches")
-      .insert({ user_id: userEmail, icp_prompt: icpPrompt })
+      .insert({
+        user_id: userEmail,
+        icp_prompt: icpPrompt,
+        icp_hash: icpHash,
+      })
       .select("id")
       .single();
 
@@ -151,32 +205,37 @@ Deno.serve(async (req) => {
 
     const searchId = search.id as string;
 
-    // ── Deduct credits (cache hits ALSO cost — cache is invisible) ──────
-    let deduct: DeductResult;
-    try {
-      deduct = await deductCredits(userEmail, SEARCH_COST, searchId);
-    } catch (err) {
-      // Roll back the search row we just created so we don't leave orphans.
-      await supabase.from("searches").delete().eq("id", searchId);
-      const message = err instanceof Error ? err.message : "Credit error";
-      return jsonResponse({ error: message }, 500);
+    if (!isFree) {
+      let deduct: DeductResult;
+      try {
+        deduct = await deductCredits(userEmail, SEARCH_COST, searchId);
+      } catch (err) {
+        await supabase.from("searches").delete().eq("id", searchId);
+        const message = err instanceof Error ? err.message : "Credit error";
+        return jsonResponse({ error: message }, 500);
+      }
+
+      if (!deduct.success) {
+        await supabase.from("searches").delete().eq("id", searchId);
+        return jsonResponse(
+          {
+            error: "insufficient_credits",
+            balance: deduct.new_balance,
+            required: SEARCH_COST,
+          },
+          402,
+        );
+      }
     }
 
-    if (!deduct.success) {
-      // Insufficient balance — undo the search row.
-      await supabase.from("searches").delete().eq("id", searchId);
-      return jsonResponse(
-        {
-          error: "insufficient_credits",
-          balance: deduct.new_balance,
-          required: SEARCH_COST,
-        },
-        402,
+    const cacheResult = await getCachedResults(supabase, icpPrompt);
+
+    if (isDefault && !cacheResult.hit) {
+      console.warn(
+        "[start-search] default prompt cache miss, running live free:",
+        icpPrompt,
       );
     }
-
-    // ── Cache check ─────────────────────────────────────────────────────
-    const cacheResult = await getCachedResults(supabase, icpPrompt);
 
     if (cacheResult.hit) {
       if (
@@ -210,7 +269,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── Live job ────────────────────────────────────────────────────────
     const { data: job, error: jobError } = await supabase
       .from("search_jobs")
       .insert({

@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dialog";
 import { InsufficientCreditsDialog } from "@/components/insufficient-credits-dialog";
 import { SearchResultsTable } from "@/components/search-results-table";
+import { UpgradeModal } from "@/components/upgrade-modal";
 import { useAuth } from "@/lib/auth-context";
 import { useCredits } from "@/lib/credits-context";
 import { stageLabel } from "@/lib/format";
@@ -105,6 +106,10 @@ function NewSearchView() {
     balance: number;
   }>({ open: false, balance: 0 });
   const [buyCreditsOpen, setBuyCreditsOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [upgradeReason, setUpgradeReason] = useState<
+    "save_leads" | "custom_search"
+  >("custom_search");
   const [tipsOpen, setTipsOpen] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tipsShownRef = useRef(false);
@@ -299,7 +304,15 @@ function NewSearchView() {
       const data = (await res.json()) as StartSearchResponse & {
         balance?: number;
         required?: number;
+        error?: string;
       };
+
+      if (res.status === 403 && data.error === "upgrade_required") {
+        setUpgradeReason("custom_search");
+        setUpgradeOpen(true);
+        setUi(INITIAL_STATE);
+        return;
+      }
 
       if (res.status === 402 || data.error === "insufficient_credits") {
         const balance = typeof data.balance === "number" ? data.balance : 0;
@@ -521,6 +534,11 @@ function NewSearchView() {
       <BuyCreditsModal
         open={buyCreditsOpen}
         onOpenChange={setBuyCreditsOpen}
+      />
+      <UpgradeModal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        reason={upgradeReason}
       />
     </div>
   );
