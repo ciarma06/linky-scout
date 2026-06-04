@@ -94,7 +94,13 @@ function AuthHandler() {
         jwt: token,
         email: payload.email,
         access: "premium",
-        plan: payload.plan,
+        plan:
+          payload.plan === "assistant" ||
+          payload.plan === "scout" ||
+          payload.plan === "bundle" ||
+          payload.plan === "trial"
+            ? payload.plan
+            : null,
         expiresAt: new Date(expiresAtMs).toISOString(),
         daysLeft,
         checkedAt: new Date().toISOString(),
