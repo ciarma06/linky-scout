@@ -32,7 +32,7 @@ export async function getCachedResults(
     .from("search_cache")
     .select("results")
     .eq("icp_hash", hash)
-    .gt("expires_at", new Date().toISOString())
+    .or(`pinned.eq.true,expires_at.gt.${new Date().toISOString()}`)
     .maybeSingle();
 
   if (error || !data) return { hit: false };
