@@ -67,9 +67,10 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { searchId, filters } = body as {
+    const { searchId, filters, jobId } = body as {
       searchId?: string;
       filters?: SearchFilters & { maxFollowers?: number | null };
+      jobId?: string;
     };
 
     if (!searchId || !filters) {
@@ -79,7 +80,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    const provider = getLeadProvider();
+    const provider = getLeadProvider({
+      jobId,
+      searchId,
+      stage: "stage1-search",
+    });
     const { keyword, title, geoUrns, industry, language, maxFollowers } = filters;
 
     let creditsUsed = 0;

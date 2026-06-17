@@ -13,7 +13,7 @@ const supabase = createClient(
 const CHUNK_SIZE = 12;
 const MAX_CANDIDATES = 25;
 const MAX_POSTS_PAGES = 1;
-const TARGET_CANDIDATES = 12; // stop adattivo: smetti di provare keyword una volta raggiunti
+const TARGET_CANDIDATES = 20; // stop adattivo: smetti di provare keyword una volta raggiunti. Alzato da 12: con role-matcher pass-through arrivano più commentatori validi e il collo di bottiglia si è spostato a valle (scoring).
 const MAX_SOURCE_POSTS_PER_KEYWORD = 3;
 const POSTS_PER_PAGE = 10;
 const MIN_POST_COMMENTS = 2; // sotto 2 il rapporto credito/lead è pessimo
@@ -62,40 +62,24 @@ function buildHeadlineSellerCheck(postKeyword: string) {
   };
 }
 
-const STANDARD_DECISION_MAKER_ROLES = [
-  "founder",
-  "co-founder",
-  "cofounder",
-  "ceo",
-  "owner",
-  "president",
-  "managing director",
-  "md",
-  "partner",
-  "chief",
-];
-
+// Ruoli operativi/junior: chi ha questi token NON è un lead utile in una ricerca
+// comportamentale (non vive il problema da decisore né da practitioner senior).
+// Sono gli UNICI esclusi per ruolo: il fit di ruolo vero è demandato allo scoring
+// (bio_signal), perché l'headline del commentatore è povera e il ruolo reale sta
+// nella bio, disponibile solo dopo l'enrichment.
 const EXCLUDED_OPERATIONAL_ROLES = [
   "assistant",
   "intern",
   "trainee",
   "student",
-  "coordinator",
   "apprentice",
 ];
 
-function buildRoleMatcher(title: string) {
-  const titleRole = title?.trim().toLowerCase();
-  const targetRoles = [
-    ...new Set([
-      ...(titleRole ? [titleRole] : []),
-      ...STANDARD_DECISION_MAKER_ROLES,
-    ]),
-  ];
-
-  const targetPatterns = targetRoles.map(
-    (role) => new RegExp(`\\b${escapeRegex(role)}\\b`, "i"),
-  );
+// Pass-through matcher: escludi SOLO ruoli operativi/junior. Tutto il resto passa
+// (manager, head of, HR, recruiter, talent, founder, ceo, owner, ...). L'headline
+// vuoto resta escluso: zero segnale di ruolo = candidato a rischio, non sprechiamo
+// crediti di enrichment su di lui.
+function buildRoleMatcher(_title: string) {
   const excludedPatterns = EXCLUDED_OPERATIONAL_ROLES.map(
     (role) => new RegExp(`\\b${escapeRegex(role)}\\b`, "i"),
   );
@@ -103,7 +87,7 @@ function buildRoleMatcher(title: string) {
   return (headline: string): boolean => {
     if (!headline?.trim()) return false;
     if (excludedPatterns.some((pattern) => pattern.test(headline))) return false;
-    return targetPatterns.some((pattern) => pattern.test(headline));
+    return true;
   };
 }
 
@@ -136,9 +120,10 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { searchId, filters } = body as {
+    const { searchId, filters, jobId } = body as {
       searchId?: string;
       filters?: SearchFilters & { maxFollowers?: number | null; postKeyword?: string };
+      jobId?: string;
     };
 
     if (!searchId || !filters) {
@@ -148,7 +133,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    const provider = getLeadProvider();
+    const provider = getLeadProvider({
+      jobId,
+      searchId,
+      stage: "stage1-commenters",
+    });
     const { title, postKeyword, maxFollowers } = filters;
     const postKeywordAlternatives = filters.postKeywordAlternatives ?? [];
 

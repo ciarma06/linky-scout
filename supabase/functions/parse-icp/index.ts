@@ -1,5 +1,3 @@
-//parse-icp/index.ts
-
 import "@supabase/functions-js/edge-runtime.d.ts";
 
 const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
@@ -25,14 +23,17 @@ Convert the ICP description below into LinkedIn search filters. Output a valid J
 - maxFollowers (number or null): if user says "under Xk" or "less than X" followers, return X*1000 or X. Null if not mentioned.
 - behavioralCriteria (string array): behavioral signals (max 4 items, each max 5 words) that score-profiles will look for in bio/posts. Empty array if none mentioned.
 - searchMode (string): "behavioral" if the ICP describes something the person ACTIVELY EXPRESSES IN POSTS (complaints, opinions, announcements, stories they'd write about — e.g. "founders complaining about lead quality", "CEOs posting about hiring struggles", "founders sharing revenue numbers"). "profile" otherwise (role, industry, static attributes, or silent actions that don't necessarily get posted — e.g. "SaaS founder in UK", "founder who does cold outreach"). When unsure, use "profile" (the safe default).
-- postKeyword (string): ONLY if searchMode is "behavioral". 1-3 words that would literally appear in the kind of post you're looking for (e.g. ICP "founders complaining about lead quality" → "lead quality"). Empty string if searchMode is "profile".
+- postKeyword (string): ONLY if searchMode is "behavioral". 1-3 words that would literally appear in a post about this topic — but phrased the way the TARGET writes it, NOT as a neutral industry label. Neutral topic words (e.g. "hiring", "leads", "sales") surface low-engagement thought-leadership posts with almost no comments; problem/symptom phrasing surfaces posts where people actually discuss it and generate comments.
+  - For behavioralIntent "expresses": symptom/frustration phrasing a sufferer writes. ICP "founders complaining about lead quality" → "unqualified leads" (NOT "lead quality"); ICP "founders struggling to hire" → "can't find talent" (NOT "hiring").
+  - For behavioralIntent "offers": the service/solution phrasing a vendor writes — e.g. "cold outreach", "we book meetings".
+  Empty string if searchMode is "profile".
 - postKeywordAlternatives (string array): ONLY if searchMode is "behavioral".
-  3-4 alternative search phrases that would surface posts generating
-  DISCUSSION among people who LIVE the problem (not sellers). Mix paraphrases
-  of the topic with emotional/symptom language that a sufferer would use in
-  a comment but a seller would avoid. Empty array if searchMode is "profile".
-  Example for "founders complaining about lead quality":
-  ["unqualified leads", "leads not converting", "wasted ad spend", "pipeline quality"]
+  3-4 alternative phrases, DISTINCT from postKeyword and from each other, that
+  surface posts generating DISCUSSION among people who LIVE the problem (not
+  sellers). Prefer emotional/symptom language a sufferer uses in a post or
+  comment but a seller would avoid. Each 1-4 words. Empty array if "profile".
+  Example for "founders complaining about lead quality" (primary "unqualified leads"):
+  ["leads not converting", "wasted ad spend", "leads going nowhere", "cold leads only"]
 - behavioralIntent (string): ONLY if searchMode is "behavioral". Who you want among people posting about the topic:
   "expresses" = people who LIVE the problem (complaints, frustrations, first-person stories — "struggling with X", "frustrated by X", "can't figure out X")
   "offers" = people who SELL solutions to the problem (agencies, consultants, tool builders — "I help companies with X", "we solve X")
@@ -119,7 +120,12 @@ KEYWORD TRANSLATION RULES (use these when applicable):
 
 <example>
 <input>Founders complaining about the quality of their leads</input>
-<output><filters>{"keyword":"founder","title":"founder","geoUrns":["103644278","101165590","101174742","101452733","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":null,"behavioralCriteria":["complains about lead quality","frustrated with unqualified leads"],"searchMode":"behavioral","postKeyword":"lead quality","postKeywordAlternatives":["unqualified leads","leads not converting","wasted ad spend","pipeline quality"]}</filters></output>
+<output><filters>{"keyword":"founder","title":"founder","geoUrns":["103644278","101165590","101174742","101452733","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":null,"behavioralCriteria":["complains about lead quality","frustrated with unqualified leads"],"searchMode":"behavioral","postKeyword":"unqualified leads","postKeywordAlternatives":["leads not converting","wasted ad spend","leads going nowhere","cold leads only"],"behavioralIntent":"expresses"}</filters></output>
+</example>
+
+<example>
+<input>Founders complaining about difficulties to hire</input>
+<output><filters>{"keyword":"founder","title":"founder","geoUrns":["103644278","101165590","101174742","101452733","101282230","105015875","103350119","105646813","102890719"],"industry":[],"language":"en","maxFollowers":null,"behavioralCriteria":["struggles to hire","frustrated with recruiting"],"searchMode":"behavioral","postKeyword":"can't find talent","postKeywordAlternatives":["hiring is broken","recruiting nightmare","candidates ghosting","wrong hires"],"behavioralIntent":"expresses"}</filters></output>
 </example>
 
 <example>
@@ -140,7 +146,7 @@ KEYWORD TRANSLATION RULES (use these when applicable):
 - behavioralCriteria items must be short (max 5 words each) and ONLY include signals the user explicitly mentioned. Do not invent.
 - Keyword translation rules in <mappings> take priority over literal user words.
 - The KEY TEST for searchMode: "Would this person have likely written a POST about this?" If yes (it's an expressed opinion/complaint/story) → "behavioral". If it's just a role, sector, or a silent action → "profile". Default to "profile" when uncertain.
-- If searchMode is "behavioral", postKeyword MUST be non-empty and must be words that appear in the post content itself, not the ICP description.
+- If searchMode is "behavioral", postKeyword MUST be non-empty and must be words that appear in the post/comment itself (not the ICP description). For "expresses" it MUST be symptom/frustration phrasing, NOT a neutral topic label — avoid bare generic industry terms like "hiring", "leads", "sales", which surface posts with almost no comments.
 - postKeywordAlternatives must be DISTINCT from postKeyword and from each
   other. Prefer phrases that attract first-person frustration in comments
   (symptoms, outcomes, emotional language) over generic topic labels.

@@ -1,3 +1,4 @@
+import type { LinkdApiCallContext } from "../linkdapi-call-stats.ts";
 import { LinkdAPIProvider } from "./linkdapi.ts";
 import type { LeadDataProvider } from "./types.ts";
 
@@ -17,7 +18,7 @@ export { LinkdAPIProvider } from "./linkdapi.ts";
  *
  * @throws {Error} When `LINKDAPI_KEY` is not set in the environment.
  */
-export function getLeadProvider(): LeadDataProvider {
+export function getLeadProvider(ctx?: LinkdApiCallContext): LeadDataProvider {
   const apiKey = Deno.env.get("LINKDAPI_KEY");
 
   if (!apiKey) {
@@ -27,5 +28,7 @@ export function getLeadProvider(): LeadDataProvider {
     );
   }
 
-  return new LinkdAPIProvider(apiKey);
+  const provider = new LinkdAPIProvider(apiKey);
+  if (ctx) provider.setCallContext(ctx);
+  return provider;
 }

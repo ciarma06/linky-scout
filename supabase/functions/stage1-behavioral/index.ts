@@ -36,9 +36,10 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const { searchId, filters } = body as {
+    const { searchId, filters, jobId } = body as {
       searchId?: string;
       filters?: SearchFilters & { maxFollowers?: number | null; postKeyword?: string };
+      jobId?: string;
     };
 
     if (!searchId || !filters) {
@@ -48,7 +49,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    const provider = getLeadProvider();
+    const provider = getLeadProvider({
+      jobId,
+      searchId,
+      stage: "stage1-behavioral",
+    });
     const { title, postKeyword, maxFollowers } = filters;
 
     // Guardia: postKeyword obbligatorio per il motore comportamentale.

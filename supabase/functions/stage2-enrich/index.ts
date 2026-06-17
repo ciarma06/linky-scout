@@ -20,7 +20,7 @@ const COST_POSTS_ALL = 1;
 Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
-    const { searchId } = body;
+    const { searchId, jobId } = body as { searchId?: string; jobId?: string };
 
     if (!searchId) {
       return new Response(
@@ -46,7 +46,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    const provider = getLeadProvider();
+    const provider = getLeadProvider({
+      jobId,
+      searchId,
+      stage: "stage2-enrich",
+    });
 
     let detailsCalls = 0;
     let postsCalls = 0;

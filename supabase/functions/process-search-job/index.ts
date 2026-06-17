@@ -2,6 +2,10 @@
 
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import {
+  formatLinkdApiSummary,
+  setLinkdApiRouting,
+} from "../_shared/linkdapi-call-stats.ts";
 import { setCachedResults } from "../_shared/lead-providers/cache.ts";
 
 declare const EdgeRuntime: { waitUntil: (promise: Promise<unknown>) => void };
@@ -102,32 +106,65 @@ async function stageSearch(
     typeof filters.postKeyword === "string" &&
     filters.postKeyword.trim().length > 0;
 
+  let stageFunction = "stage1-search";
+  let engine = "A";
+
   if (mode === "behavioral" && !hasKeyword) {
     console.log(
       `[orchestrator] WARNING: searchMode=behavioral ma postKeyword vuoto → fallback a stage1-search`,
     );
   }
 
-  let response;
   if (mode === "behavioral" && hasKeyword) {
     const intent = (filters.behavioralIntent as string) ?? "expresses";
     if (intent === "expresses") {
-      response = await callFunction("stage1-commenters", { searchId, filters });
+      stageFunction = "stage1-commenters";
+      engine = "C";
     } else if (intent === "offers" || intent === "both") {
       if (intent === "both") {
         console.warn(`[process-search-job] behavioralIntent="both" trattato come "offers"`);
       }
-      response = await callFunction("stage1-behavioral", { searchId, filters });
+      stageFunction = "stage1-behavioral";
+      engine = "B";
     } else {
       console.warn(`[process-search-job] intent sconosciuto "${intent}", fallback a behavioral`);
-      response = await callFunction("stage1-behavioral", { searchId, filters });
+      stageFunction = "stage1-behavioral";
+      engine = "B";
     }
-  } else {
-    response = await callFunction("stage1-search", { searchId, filters });
   }
+
+  const routing = {
+    searchMode: mode,
+    behavioralIntent: (filters.behavioralIntent as string) ?? null,
+    postKeyword: hasKeyword ? filters.postKeyword : null,
+    stageFunction,
+    engine,
+    hasKeyword,
+  };
+
+  console.log(
+    `[process-search-job] ROUTING searchId=${searchId} jobId=${jobId} ` +
+    `${JSON.stringify(routing)}`,
+  );
+  await setLinkdApiRouting(supabase, jobId, routing);
+
+  const response = await callFunction(stageFunction, { searchId, filters, jobId });
   const done = response.done === true;
 
   if (done) {
+    const { data: jobRow } = await supabase
+      .from("search_jobs")
+      .select("linkdapi_call_stats")
+      .eq("id", jobId)
+      .single();
+
+    console.log(
+      `[process-search-job] SEARCH DONE jobId=${jobId} ` +
+      formatLinkdApiSummary(
+        (jobRow?.linkdapi_call_stats as Record<string, unknown> | null) ?? null,
+      ),
+    );
+
     await updateJob(jobId, {
       progress: 38,
       current_stage: "enrich",
@@ -161,7 +198,7 @@ async function stageSearch(
 async function stageEnrich(jobId: string, searchId: string) {
   await updateJob(jobId, { progress: 40, current_stage: "enriching" });
 
-  const response = await callFunction("stage2-enrich", { searchId });
+  const response = await callFunction("stage2-enrich", { searchId, jobId });
   const done = response.done === true;
 
   if (done) {
@@ -204,9 +241,15 @@ async function stageScore(
   await updateJob(jobId, { progress: 80, current_stage: "scoring" });
 
   const filters = job.parsed_filters as Record<string, unknown> | null;
+  const searchMode = (filters?.searchMode as string) ?? "profile";
   const behavioralIntent = (filters?.behavioralIntent as string) ?? "expresses";
 
-  await callFunction("score-profiles", { searchId, icpPrompt, behavioralIntent });
+  await callFunction("score-profiles", {
+    searchId,
+    icpPrompt,
+    behavioralIntent,
+    searchMode,
+  });
 
   await updateJob(jobId, {
     progress: 90,

@@ -1,6 +1,11 @@
 // supabase/functions/_shared/lead-providers/linkdapi.ts
 
 import { createClient, SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import {
+  type LinkdApiCallContext,
+  logLinkdApiCall,
+  recordLinkdApiCall,
+} from "../linkdapi-call-stats.ts";
 import { acquireLinkdApiToken } from "../rate-limiter.ts";
 import type {
   LeadDataProvider,
@@ -20,6 +25,7 @@ export class LinkdAPIProvider implements LeadDataProvider {
   readonly #apiKey: string;
   readonly #baseUrl: string;
   readonly #supabase: SupabaseClient;
+  #callContext: LinkdApiCallContext | undefined;
 
   constructor(apiKey: string, baseUrl: string = DEFAULT_BASE_URL) {
     this.#apiKey = apiKey;
@@ -31,6 +37,10 @@ export class LinkdAPIProvider implements LeadDataProvider {
     );
   }
 
+  setCallContext(ctx: LinkdApiCallContext | undefined): void {
+    this.#callContext = ctx;
+  }
+
   /**
    * Authenticated GET. Acquisisce un token dal rate limiter PRIMA della fetch.
    * Se il bucket è vuoto, blocca finché un token non si libera (max 90s).
@@ -40,8 +50,10 @@ export class LinkdAPIProvider implements LeadDataProvider {
     params: Record<string, string | number> = {},
     label?: string,
   ): Promise<T> {
+    const callLabel = label ?? endpoint;
+
     // RATE LIMITING: blocca qui se necessario
-    await acquireLinkdApiToken(this.#supabase, label ?? endpoint);
+    await acquireLinkdApiToken(this.#supabase, callLabel);
 
     const url = new URL(`${this.#baseUrl}${endpoint}`);
     for (const [key, value] of Object.entries(params)) {
@@ -76,6 +88,12 @@ export class LinkdAPIProvider implements LeadDataProvider {
         `LinkdAPI error on ${endpoint}: ${json.message ?? "unknown error"}`,
       );
     }
+
+    logLinkdApiCall(callLabel, this.#callContext, {
+      httpStatus: response.status,
+      paramKeys: Object.keys(params),
+    });
+    await recordLinkdApiCall(this.#supabase, callLabel, this.#callContext);
 
     return json.data;
   }
