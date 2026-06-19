@@ -146,9 +146,19 @@ Deno.serve(async (req) => {
   );
 
   if (!canUseScout(access)) {
+    const messages: Record<string, string> = {
+      trial_ended: "Your free trial has ended. Upgrade to keep searching.",
+      expired: "Your subscription has expired. Renew to keep searching.",
+      none: "No active plan found. Sign up to start searching.",
+    };
+    const message = messages[access.access] ?? "Access not available.";
     return jsonResponse(
-      { error: "Unauthorized", access: access.access },
-      401,
+      {
+        error: "access_denied",
+        access: access.access,
+        message,
+      },
+      403,
     );
   }
 

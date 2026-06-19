@@ -2,7 +2,7 @@ import "@supabase/functions-js/edge-runtime.d.ts";
 
 const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
 const MODEL = "claude-sonnet-4-6";
-const MAX_TOKENS = 600;
+const MAX_TOKENS = 800;
 
 // System prompt: role specifico (compiler) + linguaggio diretto.
 // Niente "expert" generico, niente "helpful".

@@ -15,10 +15,11 @@ const POSTS_PER_PROFILE = 3;
 const POST_TEXT_LIMIT = 600;
 
 // Cap applicato SOLO quando il testo del COMMENTO/matchPost è esso stesso un
-// sales pitch (matchpost_is_pitch=true) in una ricerca "expresses". Lo teniamo
-// SOTTO la DELETE_THRESHOLD di expresses (30) così chi fa pubblicità nei
-// commenti viene RIMOSSO, non tenuto al minimo. Un vendor il cui commento è una
-// lamentela genuina NON viene cappato (lo giudica lo scoring sul merito).
+// sales pitch (matchpost_is_pitch=true) in una ricerca "expresses". Valore GREZZO
+// 20: resta sotto la soglia di taglio expresses (grezza 30 / display 35 col
+// BEHAVIORAL_DISPLAY_BONUS) sia prima sia dopo il bonus, quindi chi fa pubblicità
+// nei commenti viene comunque RIMOSSO, non tenuto al minimo. Un vendor il cui
+// commento è una lamentela genuina NON viene cappato (lo giudica lo scoring sul merito).
 const COMMENT_PITCH_CAP_FOR_EXPRESSES = 20;
 
 function isScoreable(p: { bio: string | null; recent_posts: unknown; match_post?: string | null }): boolean {
@@ -217,10 +218,20 @@ Deno.serve(async (req) => {
       );
     }
 
-    const DELETE_THRESHOLD =
+    // Soglia di taglio "grezza", sul punteggio puro del modello.
+    const RAW_DELETE_THRESHOLD =
       searchMode === "profile" ? 40 :
       behavioralIntent === "expresses" ? 30 :
       50;
+
+    // Bonus di sola visualizzazione per le ricerche comportamentali: i punteggi
+    // del Motore C stanno strutturalmente bassi (i sufferer on-role puri sono
+    // rari), quindi +5 cosmetico per non mostrare numeri sempre depressi.
+    // IMPORTANTE: alziamo di pari passo ANCHE la soglia di taglio, così il bonus
+    // NON allarga il funnel — sopravvive lo stesso identico insieme di profili,
+    // cambiano solo i numeri mostrati: (raw 30, soglia 30) ≡ (display 35, soglia 35).
+    const BEHAVIORAL_DISPLAY_BONUS = searchMode === "behavioral" ? 5 : 0;
+    const DELETE_THRESHOLD = RAW_DELETE_THRESHOLD + BEHAVIORAL_DISPLAY_BONUS;
 
     const { data: candidates, error } = await supabase
       .from("search_results")
@@ -335,7 +346,9 @@ Return a JSON array with one object per profile. Use the same index values as th
       throw new Error("Claude response is not an array");
     }
 
-    const enforcedScores: ClaudeScore[] = scores.map((score) => {
+    // FASE 1 — cap sul commento-pitch, sul punteggio GREZZO. I log mostrano
+    // sempre il grezzo del modello: confrontabile tra run e col rubric.
+    const cappedScores: ClaudeScore[] = scores.map((score) => {
       if (
         searchMode === "behavioral" &&
         behavioralIntent === "expresses" &&
@@ -353,6 +366,14 @@ Return a JSON array with one object per profile. Use the same index values as th
       );
       return score;
     });
+
+    // FASE 2 — bonus di visualizzazione (0 per le profile search). Applicato
+    // DOPO il cap; abbinato allo shift di DELETE_THRESHOLD non altera quali
+    // profili sopravvivono, solo il numero salvato/mostrato.
+    const enforcedScores: ClaudeScore[] = cappedScores.map((score) => ({
+      ...score,
+      match_score: Math.min(100, score.match_score + BEHAVIORAL_DISPLAY_BONUS),
+    }));
 
     await Promise.all(
       enforcedScores.map(async (score) => {

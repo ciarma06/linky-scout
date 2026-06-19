@@ -123,6 +123,8 @@ Deno.serve(async (req) => {
           : 0,
       plan,
       access: access.access,
+      expiresAt: "expiresAt" in access ? access.expiresAt : null,
+      daysLeft: "daysLeft" in access ? access.daysLeft : null,
     });
   } catch (err) {
     console.error("[get-credits] unexpected error:", err);

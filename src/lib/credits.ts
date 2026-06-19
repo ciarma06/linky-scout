@@ -63,6 +63,8 @@ export interface CreditsResponse {
   messages_limit: number;
   plan: "trial" | "assistant" | "scout" | "bundle" | null;
   access: string;
+  expiresAt: string | null;
+  daysLeft: number | null;
 }
 
 /**

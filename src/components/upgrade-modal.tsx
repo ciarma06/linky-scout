@@ -29,7 +29,7 @@ const CUSTOM_SEARCH_BENEFITS = [
 export type UpgradeModalProps = {
   open: boolean;
   onClose: () => void;
-  reason?: "save_leads" | "custom_search";
+  reason?: "save_leads" | "custom_search" | "access_denied";
 };
 
 export function UpgradeModal({
@@ -38,15 +38,22 @@ export function UpgradeModal({
   reason = "save_leads",
 }: UpgradeModalProps) {
   const isCustomSearch = reason === "custom_search";
-  const title = isCustomSearch
-    ? "Run custom searches with a paid plan"
-    : "Save leads with Linky Assistant";
-  const description = isCustomSearch
-    ? "Your trial includes only the sample searches. Upgrade to search any audience on LinkedIn and unlock your full prospecting workflow."
-    : "Saving leads is included in Linky Assistant and Bundle plans. Upgrade to keep your best prospects organized and pipe them straight into AI-powered outreach.";
-  const benefits = isCustomSearch
+  const isAccessDenied = reason === "access_denied";
+
+  const title = isAccessDenied
+    ? "Your plan is no longer active"
+    : isCustomSearch
+      ? "Run custom searches with a paid plan"
+      : "Save leads with Linky Assistant";
+  const description = isAccessDenied
+    ? "Your subscription or trial has ended. Upgrade or renew your plan to continue finding leads on LinkedIn."
+    : isCustomSearch
+      ? "Your trial includes only the sample searches. Upgrade to search any audience on LinkedIn and unlock your full prospecting workflow."
+      : "Saving leads is included in Linky Assistant and Bundle plans. Upgrade to keep your best prospects organized and pipe them straight into AI-powered outreach.";
+  const benefits = isCustomSearch || isAccessDenied
     ? CUSTOM_SEARCH_BENEFITS
     : SAVE_LEADS_BENEFITS;
+  const primaryCta = isAccessDenied ? "View plans →" : "Get Linky Assistant →";
 
   return (
     <Dialog
@@ -80,7 +87,7 @@ export function UpgradeModal({
         <DialogFooter className="flex-col gap-2 sm:flex-col">
           <Button asChild className="w-full rounded-xl">
             <a href={UPGRADE_URL} target="_blank" rel="noopener noreferrer">
-              Get Linky Assistant →
+              {primaryCta}
             </a>
           </Button>
           <Button

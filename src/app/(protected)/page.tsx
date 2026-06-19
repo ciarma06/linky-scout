@@ -108,7 +108,7 @@ function NewSearchView() {
   const [buyCreditsOpen, setBuyCreditsOpen] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [upgradeReason, setUpgradeReason] = useState<
-    "save_leads" | "custom_search"
+    "save_leads" | "custom_search" | "access_denied"
   >("custom_search");
   const [tipsOpen, setTipsOpen] = useState(false);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -307,11 +307,20 @@ function NewSearchView() {
         error?: string;
       };
 
-      if (res.status === 403 && data.error === "upgrade_required") {
-        setUpgradeReason("custom_search");
-        setUpgradeOpen(true);
-        setUi(INITIAL_STATE);
-        return;
+      if (res.status === 403) {
+        if (data.error === "upgrade_required") {
+          setUpgradeReason("custom_search");
+          setUpgradeOpen(true);
+          setUi(INITIAL_STATE);
+          return;
+        }
+
+        if (data.error === "access_denied") {
+          setUpgradeReason("access_denied");
+          setUpgradeOpen(true);
+          setUi(INITIAL_STATE);
+          return;
+        }
       }
 
       if (res.status === 402 || data.error === "insufficient_credits") {

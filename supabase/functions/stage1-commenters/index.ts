@@ -15,6 +15,7 @@ const MAX_CANDIDATES = 25;
 const MAX_POSTS_PAGES = 1;
 const TARGET_CANDIDATES = 20; // stop adattivo: smetti di provare keyword una volta raggiunti. Alzato da 12: con role-matcher pass-through arrivano più commentatori validi e il collo di bottiglia si è spostato a valle (scoring).
 const MAX_SOURCE_POSTS_PER_KEYWORD = 3;
+const MAX_CANDIDATES_PER_POST = 8; // diversità: un singolo post non può fornire più di N candidati nuovi → con TARGET 20 si attinge da >=3 post invece di saturare sul primo thread virale (riduce il bias del singolo thread su tutte le ricerche comportamentali)
 const POSTS_PER_PAGE = 10;
 const MIN_POST_COMMENTS = 2; // sotto 2 il rapporto credito/lead è pessimo
 const COMMENTS_PER_POST = 30;
@@ -240,8 +241,15 @@ Deno.serve(async (req) => {
             creditsUsed += COST_POST_COMMENTS;
             sourcePostsUsed += 1;
 
+            // Diversità: contiamo solo i candidati NUOVI presi da questo post.
+            // Raggiunto MAX_CANDIDATES_PER_POST, passiamo al post successivo (e,
+            // se necessario, alla keyword successiva), così i lead non vengono
+            // tutti dallo stesso thread.
+            let addedFromThisPost = 0;
+
             for (const item of commentsResp.comments) {
               if (candidates.size >= TARGET_CANDIDATES) break;
+              if (addedFromThisPost >= MAX_CANDIDATES_PER_POST) break;
 
               const { author, comment } = item;
               const text = comment?.trim() ?? "";
@@ -266,7 +274,19 @@ Deno.serve(async (req) => {
               if (!author.urn) continue;
 
               const existing = candidates.get(author.urn);
-              if (!existing || text.length > existing.matchComment.length) {
+              if (!existing) {
+                // candidato nuovo → conta verso il cap per-post
+                candidates.set(author.urn, {
+                  url: author.url,
+                  fullName: author.name,
+                  headline: author.headline,
+                  matchComment: text,
+                  createdAt: item.createdAt,
+                });
+                addedFromThisPost += 1;
+              } else if (text.length > existing.matchComment.length) {
+                // urn già presente: solo upgrade al commento migliore, NON è un
+                // nuovo candidato → non incrementa il cap per-post
                 candidates.set(author.urn, {
                   url: author.url,
                   fullName: author.name,
@@ -276,6 +296,10 @@ Deno.serve(async (req) => {
                 });
               }
             }
+
+            console.log(
+              `[stage1-commenters]   post ${sp.postID}: +${addedFromThisPost} candidati nuovi (cap ${MAX_CANDIDATES_PER_POST})`,
+            );
           } catch (err) {
             console.warn(
               `[stage1-commenters] posts/comments fallito per ${sp.postID}: ${

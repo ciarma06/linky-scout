@@ -30,10 +30,16 @@ export default function SettingsPage() {
     router.replace("/login");
   }
 
-  const planLabel = formatPlan(user?.plan, user?.access);
-  const planTone = planTones(user?.plan, user?.access);
+  const planLabel =
+    isLoading && !credits
+      ? "—"
+      : formatPlan(credits?.plan ?? null, credits?.access ?? null);
+  const planTone =
+    isLoading && !credits
+      ? "bg-muted text-muted-foreground"
+      : planTones(credits?.plan ?? null, credits?.access ?? null);
   const balance = totalCredits(credits);
-  const locked = user?.plan === "assistant";
+  const locked = credits?.plan === "assistant";
 
   return (
     <div className="flex flex-col gap-8">
@@ -75,19 +81,21 @@ export default function SettingsPage() {
                     className={cn(
                       "inline-flex h-6 items-center rounded-full px-2.5 text-xs font-medium",
                       planTone,
+                      isLoading && !credits && "opacity-50",
                     )}
                   >
                     {planLabel}
                   </span>
-                  {typeof user?.daysLeft === "number" && (
-                    <span className="text-xs text-muted-foreground">
-                      {user.daysLeft > 0
-                        ? `${user.daysLeft} ${
-                            user.daysLeft === 1 ? "day" : "days"
-                          } left`
-                        : "Expired"}
-                    </span>
-                  )}
+                  {!isLoading &&
+                    typeof credits?.daysLeft === "number" && (
+                      <span className="text-xs text-muted-foreground">
+                        {credits.daysLeft > 0
+                          ? `${credits.daysLeft} ${
+                              credits.daysLeft === 1 ? "day" : "days"
+                            } left`
+                          : "Expired"}
+                      </span>
+                    )}
                 </div>
               }
             />
@@ -255,12 +263,24 @@ function formatPlan(
   if (plan === "scout") return "Scout";
   if (plan === "bundle") return "Bundle";
   if (plan === "assistant") return "Assistant";
-  if (!access) return "—";
-  const v = access.toLowerCase();
-  if (v.includes("expired")) return "Expired";
-  if (v === "premium") return "Premium";
-  if (v === "waitlist_trial" || v === "trial" || v === "active") return "Trial";
-  return access.charAt(0).toUpperCase() + access.slice(1);
+  if (plan === "trial") return "Trial";
+
+  if (!access) return "No active plan";
+
+  switch (access) {
+    case "trial_ended":
+      return "Trial ended";
+    case "expired":
+      return "Expired";
+    case "none":
+      return "No active plan";
+    case "trial":
+      return "Trial";
+    case "premium":
+      return "No active plan";
+    default:
+      return access.charAt(0).toUpperCase() + access.slice(1);
+  }
 }
 
 function planTones(
@@ -273,10 +293,18 @@ function planTones(
   if (plan === "assistant") {
     return "bg-[#f59e0b]/10 text-[#b45309] dark:bg-[#f59e0b]/20 dark:text-[#fbbf24]";
   }
+  if (plan === "trial") {
+    return "bg-[#10b981]/15 text-[#047857] dark:bg-[#10b981]/20 dark:text-[#34d399]";
+  }
   if (!access) return "bg-muted text-muted-foreground";
-  const v = access.toLowerCase();
-  if (v.includes("expired")) {
+  if (access === "trial_ended" || access === "expired") {
     return "bg-[#ef4444]/10 text-[#ef4444] dark:bg-[#ef4444]/20 dark:text-[#fca5a5]";
   }
-  return "bg-[#10b981]/15 text-[#047857] dark:bg-[#10b981]/20 dark:text-[#34d399]";
+  if (access === "none") {
+    return "bg-muted text-muted-foreground";
+  }
+  if (access === "trial") {
+    return "bg-[#10b981]/15 text-[#047857] dark:bg-[#10b981]/20 dark:text-[#34d399]";
+  }
+  return "bg-muted text-muted-foreground";
 }
